@@ -1,4 +1,4 @@
-// TokenManagerService.cs
+// TokenManagerService.cs - ENHANCED VERSION
 using ShopifyProductApp.Services; 
 using System.Collections.Concurrent;
 using System.Text.Json;
@@ -8,10 +8,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
 
-
 namespace ShopifyProductApp.Services
 {
-    // ✅ INTERFACE TANIMI - BUNU EKLEDİK
     public interface ITokenManager
     {
         Task<string?> GetValidAccessTokenAsync();
@@ -21,7 +19,6 @@ namespace ShopifyProductApp.Services
         Task<TokenHealthStatus> GetTokenHealthAsync();
     }
 
-    // ✅ IMPLEMENTATION
     public class TokenManagerService : ITokenManager
     {
         private readonly IServiceProvider _serviceProvider;
@@ -35,19 +32,25 @@ namespace ShopifyProductApp.Services
         private TokenResponse? _cachedToken;
         private DateTime _cacheExpiry = DateTime.MinValue;
         private readonly TimeSpan _minCacheLifetime = TimeSpan.FromMinutes(1);
-        private readonly double _cachePercentage = 0.8;
+        private readonly double _cachePercentage = 0.75; // Cache süresini %75'e düşürdük (daha erken yenileme)
 
         // Health
         private DateTime _lastSuccessfulRefresh = DateTime.MinValue;
         private int _consecutiveFailures = 0;
-        private const int MaxConsecutiveFailures = 3;
+        private const int MaxConsecutiveFailures = 5;
+        private DateTime _lastRefreshAttempt = DateTime.MinValue;
+        private readonly TimeSpan _minRefreshInterval = TimeSpan.FromMinutes(1); // Çok sık yenileme yapma
 
         // Config
         private readonly string _tokenFile;
+        private readonly string _backupTokenFile; // YENI: Backup dosyası
         private readonly string _clientId;
         private readonly string _clientSecret;
         private readonly string _redirectUri;
         private readonly string _baseUrl;
+        
+        // YENI: Token yenileme eşiği (dakika)
+        private readonly int _refreshThresholdMinutes;
 
         public TokenManagerService(
             IServiceProvider serviceProvider, 
@@ -71,7 +74,21 @@ namespace ShopifyProductApp.Services
                 ?? throw new InvalidOperationException("ExactOnline:RedirectUri missing");
             _baseUrl = configuration["ExactOnline:BaseUrl"] ?? "https://start.exactonline.nl";
             
-            _tokenFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "exact_token.json");
+            // Token dosyaları
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            _tokenFile = Path.Combine(baseDir, "exact_token.json");
+            _backupTokenFile = Path.Combine(baseDir, "exact_token.backup.json");
+
+            // Refresh threshold
+            if (!int.TryParse(configuration["App:BackgroundServices:TokenRefreshThresholdMinutes"], 
+                out _refreshThresholdMinutes))
+            {
+                _refreshThresholdMinutes = 2; // Varsayılan: 10 dakika kala yenile
+            }
+
+            _logger.LogInformation("🔧 TokenManager yapılandırıldı:");
+            _logger.LogInformation("   - Refresh Threshold: {Threshold} dakika", _refreshThresholdMinutes);
+            _logger.LogInformation("   - Cache Percentage: {Percentage}%", _cachePercentage * 100);
         }
 
         public async Task<string?> GetValidAccessTokenAsync()
@@ -111,26 +128,24 @@ namespace ShopifyProductApp.Services
                 if (token == null)
                 {
                     _logger.LogWarning("⚠️ Veritabanında token bulunamadı");
-                    
-                    if (File.Exists(_tokenFile))
-                    {
-                        _logger.LogInformation("📁 Dosyadan token yükleniyor...");
-                        token = await LoadTokenFromFileAndSaveToDb(settingsService);
-                    }
+                    token = await LoadTokenWithFallback(settingsService);
 
                     if (token == null)
                     {
-                        _logger.LogError("❌ Ne veritabanında ne de dosyada token bulunamadı");
+                        _logger.LogError("❌ Hiçbir kaynakta token bulunamadı");
                         return null;
                     }
                 }
 
                 LogTokenStatus(token);
 
-                // 4️⃣ Token dolmuş veya dolmak üzere mi?
-                if (token.IsExpired() || IsAboutToExpire(token))
+                // 4️⃣ Token dolmuş, dolmak üzere veya eşik altında mı?
+                if (token.IsExpired() || ShouldRefreshToken(token))
                 {
-                    _logger.LogWarning("⚠️ Token dolmuş veya dolmak üzere, yenileniyor...");
+                    _logger.LogWarning("⚠️ Token yenilenmeli (Expiry: {ExpiryTime}, Kalan: {Remaining:F1} dk)", 
+                        token.ExpiryTime.ToString("HH:mm:ss"),
+                        (token.ExpiryTime - DateTime.UtcNow).TotalMinutes);
+                    
                     token = await RefreshTokenSafelyAsync(token, settingsService);
                     
                     if (token == null)
@@ -153,21 +168,8 @@ namespace ShopifyProductApp.Services
                 _logger.LogError(ex, "❌ GetValidTokenAsync kritik hatası");
                 _consecutiveFailures++;
                 
-                // Fallback: Cache'deki token
-                if (_cachedToken != null && !_cachedToken.IsExpired())
-                {
-                    _logger.LogWarning("⚠️ Hata oldu ama cache'deki token kullanılıyor");
-                    return _cachedToken;
-                }
-                
-                // Fallback: Dosyadan
-                if (File.Exists(_tokenFile))
-                {
-                    _logger.LogWarning("🆘 Acil durum: Dosyadan token deneniyor");
-                    return await LoadTokenFromFile();
-                }
-                
-                return null;
+                // Fallback stratejisi
+                return await GetFallbackToken();
             }
             finally
             {
@@ -178,14 +180,22 @@ namespace ShopifyProductApp.Services
         public async Task<bool> IsTokenValidAsync()
         {
             var token = await GetValidTokenAsync();
-            return token != null && !token.IsExpired();
+            return token != null && !token.IsExpired() && !ShouldRefreshToken(token);
         }
 
         public async Task RefreshTokenIfNeededAsync()
         {
+            // Rate limiting: Çok sık yenileme yapma
+            if (DateTime.UtcNow - _lastRefreshAttempt < _minRefreshInterval)
+            {
+                _logger.LogDebug("⏳ Son yenileme çok yakın zamanda yapıldı, atlıyoruz");
+                return;
+            }
+
             await _refreshSemaphore.WaitAsync();
             try
             {
+                _lastRefreshAttempt = DateTime.UtcNow;
                 _logger.LogInformation("🔄 Manuel token yenileme başlatıldı");
                 
                 using var scope = _serviceProvider.CreateScope();
@@ -196,16 +206,36 @@ namespace ShopifyProductApp.Services
                 
                 if (currentToken == null)
                 {
-                    _logger.LogError("❌ Mevcut token alınamadı");
-                    return;
+                    _logger.LogError("❌ Mevcut token alınamadı, fallback deneniyor");
+                    currentToken = await LoadTokenWithFallback(settingsService);
+                    
+                    if (currentToken == null)
+                    {
+                        _logger.LogError("❌ Fallback'te de token bulunamadı");
+                        return;
+                    }
                 }
                 
+                // Gerçekten yenilemeye ihtiyaç var mı?
+                if (!ShouldRefreshToken(currentToken) && !currentToken.IsExpired())
+                {
+                    _logger.LogInformation("✅ Token hala geçerli, yenilemeye gerek yok");
+                    return;
+                }
+
                 var newToken = await RefreshTokenSafelyAsync(currentToken, settingsService);
                 
                 if (newToken != null)
                 {
                     UpdateCache(newToken);
                     _logger.LogInformation("✅ Manuel token yenileme başarılı");
+                    _consecutiveFailures = 0;
+                }
+                else
+                {
+                    _consecutiveFailures++;
+                    _logger.LogError("❌ Manuel token yenileme başarısız (Ardışık hata: {Count})", 
+                        _consecutiveFailures);
                 }
             }
             finally
@@ -233,12 +263,15 @@ namespace ShopifyProductApp.Services
                 }
 
                 var remaining = (token.ExpiryTime - DateTime.UtcNow).TotalMinutes;
-                var isHealthy = remaining > 5 && _consecutiveFailures < MaxConsecutiveFailures;
+                var isHealthy = remaining > _refreshThresholdMinutes && 
+                                _consecutiveFailures < MaxConsecutiveFailures;
 
                 return new TokenHealthStatus
                 {
                     IsHealthy = isHealthy,
-                    Message = $"Token geçerli, {remaining:F1} dakika kaldı",
+                    Message = isHealthy 
+                        ? $"Token geçerli, {remaining:F1} dk kaldı"
+                        : $"Token yenilenmeli, {remaining:F1} dk kaldı",
                     ExpiryTime = token.ExpiryTime,
                     RemainingMinutes = remaining,
                     LastCheck = DateTime.UtcNow,
@@ -265,7 +298,19 @@ namespace ShopifyProductApp.Services
         {
             return _cachedToken != null && 
                    DateTime.UtcNow < _cacheExpiry && 
-                   !_cachedToken.IsExpired();
+                   !_cachedToken.IsExpired() &&
+                   !ShouldRefreshToken(_cachedToken);
+        }
+
+        /// <summary>
+        /// Token'ın yenilenmesi gerekip gerekmediğini belirler
+        /// </summary>
+        private bool ShouldRefreshToken(TokenResponse token)
+        {
+            if (token == null) return true;
+            
+            var remainingMinutes = (token.ExpiryTime - DateTime.UtcNow).TotalMinutes;
+            return remainingMinutes <= _refreshThresholdMinutes;
         }
 
         private TokenResponse? ParseTokenInfo(dynamic tokenInfo)
@@ -311,12 +356,6 @@ namespace ShopifyProductApp.Services
             return true;
         }
 
-        private bool IsAboutToExpire(TokenResponse token, int bufferMinutes = 5)
-        {
-            var expiresIn = (token.ExpiryTime - DateTime.UtcNow).TotalMinutes;
-            return expiresIn <= bufferMinutes;
-        }
-
         private void UpdateCache(TokenResponse token)
         {
             _cachedToken = token;
@@ -338,19 +377,95 @@ namespace ShopifyProductApp.Services
         {
             var remaining = (token.ExpiryTime - DateTime.UtcNow).TotalMinutes;
 
-            if (remaining > 5)
+            if (remaining > _refreshThresholdMinutes)
             {
-                _logger.LogInformation("✅ Token geçerli, kalan: {Remaining:F1} dk (Expiry: {ExpiryTime})", 
+                _logger.LogInformation("✅ Token sağlıklı, kalan: {Remaining:F1} dk (Expiry: {ExpiryTime})", 
                     remaining, token.ExpiryTime.ToString("yyyy-MM-dd HH:mm:ss"));
             }
             else if (remaining > 0)
             {
-                _logger.LogWarning("⚠️ Token yakında dolacak, kalan: {Remaining:F1} dk", remaining);
+                _logger.LogWarning("⚠️ Token eşik altında, kalan: {Remaining:F1} dk", remaining);
             }
             else
             {
                 _logger.LogError("❌ Token dolmuş, {Expired:F1} dk önce expired", Math.Abs(remaining));
             }
+        }
+
+        /// <summary>
+        /// Fallback token yükleme stratejisi: Cache -> Dosya -> Backup -> null
+        /// </summary>
+        private async Task<TokenResponse?> GetFallbackToken()
+        {
+            _logger.LogWarning("🆘 Fallback token stratejisi başlatıldı");
+
+            // 1. Cache
+            if (_cachedToken != null && !_cachedToken.IsExpired())
+            {
+                _logger.LogWarning("⚠️ Cache'deki token kullanılıyor (fallback)");
+                return _cachedToken;
+            }
+
+            // 2. Ana dosya
+            var tokenFromFile = await LoadTokenFromFile();
+            if (tokenFromFile != null && ValidateToken(tokenFromFile))
+            {
+                _logger.LogWarning("⚠️ Dosyadan token yüklendi (fallback)");
+                return tokenFromFile;
+            }
+
+            // 3. Backup dosya
+            var tokenFromBackup = await LoadTokenFromBackup();
+            if (tokenFromBackup != null && ValidateToken(tokenFromBackup))
+            {
+                _logger.LogWarning("⚠️ Backup dosyadan token yüklendi (fallback)");
+                return tokenFromBackup;
+            }
+
+            _logger.LogError("❌ Hiçbir fallback stratejisi başarılı olmadı");
+            return null;
+        }
+
+        /// <summary>
+        /// Ana dosya + backup ile token yükleme
+        /// </summary>
+        private async Task<TokenResponse?> LoadTokenWithFallback(ISettingsService settingsService)
+        {
+            // 1. Ana dosyadan yükle
+            if (File.Exists(_tokenFile))
+            {
+                _logger.LogInformation("📁 Ana dosyadan token yükleniyor...");
+                var token = await LoadTokenFromFileAndSaveToDb(settingsService);
+                
+                if (token != null)
+                {
+                    return token;
+                }
+            }
+
+            // 2. Backup dosyadan yükle
+            if (File.Exists(_backupTokenFile))
+            {
+                _logger.LogWarning("⚠️ Ana dosya başarısız, backup'tan yükleniyor...");
+                var token = await LoadTokenFromBackup();
+                
+                if (token != null && ValidateToken(token))
+                {
+                    // DB'ye kaydet
+                    try
+                    {
+                        await SaveTokenToDatabase(token, settingsService);
+                        return token;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Backup token DB'ye kaydedilemedi");
+                        return token; // Yine de token'ı dön
+                    }
+                }
+            }
+
+            return null;
         }
 
         private async Task<TokenResponse?> RefreshTokenSafelyAsync(
@@ -362,11 +477,11 @@ namespace ShopifyProductApp.Services
             {
                 _logger.LogInformation("🔄 Token yenileniyor...");
                 
-                // Double-check
+                // Double-check: Başka thread yeniledi mi?
                 var freshTokenInfo = await settingsService.GetExactTokenInfoAsync();
                 var freshToken = ParseTokenInfo(freshTokenInfo);
 
-                if (freshToken != null && !freshToken.IsExpired() && !IsAboutToExpire(freshToken))
+                if (freshToken != null && !freshToken.IsExpired() && !ShouldRefreshToken(freshToken))
                 {
                     _logger.LogInformation("✅ Token başka thread tarafından yenilendi");
                     return freshToken;
@@ -396,11 +511,16 @@ namespace ShopifyProductApp.Services
                     return null;
                 }
 
-                // Kaydet
+                // İlk önce backup yap
+                await CreateBackup(currentToken);
+
+                // Sonra yeni token'ı kaydet
                 await SaveTokenToFileSafely(newToken);
                 await SaveTokenToDatabase(newToken, settingsService);
 
-                _logger.LogInformation("✅ Token başarıyla yenilendi");
+                _logger.LogInformation("✅ Token başarıyla yenilendi, yeni expiry: {ExpiryTime}", 
+                    newToken.ExpiryTime.ToString("yyyy-MM-dd HH:mm:ss"));
+                
                 _consecutiveFailures = 0;
                 _lastSuccessfulRefresh = DateTime.UtcNow;
 
@@ -453,6 +573,7 @@ namespace ShopifyProductApp.Services
                         if (attempt < maxRetries)
                         {
                             var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
+                            _logger.LogWarning("⏳ {Delay} saniye sonra tekrar denenecek", delay.TotalSeconds);
                             await Task.Delay(delay);
                             continue;
                         }
@@ -469,7 +590,8 @@ namespace ShopifyProductApp.Services
                     if (token != null)
                     {
                         token.ExpiryTime = DateTime.UtcNow.AddSeconds(token.expires_in);
-                        _logger.LogInformation("✅ Token başarıyla yenilendi");
+                        _logger.LogInformation("✅ Token başarıyla yenilendi (Expiry: {ExpiryTime})", 
+                            token.ExpiryTime.ToString("yyyy-MM-dd HH:mm:ss"));
                         return token;
                     }
                 }
@@ -533,6 +655,34 @@ namespace ShopifyProductApp.Services
             }
         }
 
+        /// <summary>
+        /// Mevcut token'ın backup'ını oluşturur
+        /// </summary>
+        private async Task CreateBackup(TokenResponse token)
+        {
+            if (token == null) return;
+
+            await _fileLock.WaitAsync();
+            try
+            {
+                var json = JsonSerializer.Serialize(token, new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                });
+
+                await File.WriteAllTextAsync(_backupTokenFile, json);
+                _logger.LogDebug("💾 Token backup oluşturuldu");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Token backup oluşturulamadı");
+            }
+            finally
+            {
+                _fileLock.Release();
+            }
+        }
+
         private async Task<TokenResponse?> LoadTokenFromFileAndSaveToDb(ISettingsService settingsService)
         {
             var token = await LoadTokenFromFile();
@@ -588,9 +738,45 @@ namespace ShopifyProductApp.Services
                 _fileLock.Release();
             }
         }
+
+        /// <summary>
+        /// Backup dosyasından token yükler
+        /// </summary>
+        private async Task<TokenResponse?> LoadTokenFromBackup()
+        {
+            await _fileLock.WaitAsync();
+            try
+            {
+                if (!File.Exists(_backupTokenFile))
+                    return null;
+
+                var text = await File.ReadAllTextAsync(_backupTokenFile);
+                var token = JsonSerializer.Deserialize<TokenResponse>(text, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    Converters = { new FlexibleIntConverter() }
+                });
+
+                if (token != null && ValidateToken(token))
+                {
+                    _logger.LogInformation("📁 Token backup dosyadan yüklendi");
+                    return token;
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Backup dosyadan token yükleme hatası");
+                return null;
+            }
+            finally
+            {
+                _fileLock.Release();
+            }
+        }
     }
 
-    // ✅ HEALTH STATUS MODEL - BUNU DA EKLEDİK
     public class TokenHealthStatus
     {
         public bool IsHealthy { get; set; }
