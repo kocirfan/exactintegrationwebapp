@@ -1,0 +1,2125 @@
+using System.Net.Http.Headers;
+using System.Text.Json;
+
+namespace ShopifyProductApp.Services;
+
+public class BatchUpdateResult
+{
+    public int SuccessCount { get; set; }
+    public int ErrorCount { get; set; }
+    public List<string> UpdatedCodes { get; set; } = new();
+}
+
+public class ShopifyService
+{
+    private readonly HttpClient _client;
+    private readonly JsonSerializerOptions _jsonOptions;
+    private readonly string _shopifyStoreUrl;
+
+    public ShopifyService(string shopifyStoreUrl, string accessToken)
+    {
+        _shopifyStoreUrl = shopifyStoreUrl.TrimEnd('/');
+        _client = new HttpClient
+        {
+            BaseAddress = new Uri($"{_shopifyStoreUrl}/admin/api/2025-01/")
+        };
+        _client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        _client.DefaultRequestHeaders.Add("X-Shopify-Access-Token", accessToken);
+
+        _jsonOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            WriteIndented = true
+        };
+    }
+
+
+    // yeni ürün ekle 
+    // ShopifyService.cs içine ekleyin
+
+    // public async Task<bool> CreateProductAsync(ExactProduct exactProduct, string logFilePath = null)
+    // {
+    //     try
+    //     {
+    //         Console.WriteLine($"🆕 Yeni ürün oluşturuluyor: SKU={exactProduct.Code}");
+
+    //         // Shopify'da oluşturulacak ürün verisi
+    //         var productData = new
+    //         {
+    //             product = new
+    //             {
+    //                 title = exactProduct.Description ?? "Başlık Yok",
+    //                 body_html = exactProduct.ExtraDescription ?? "",
+    //                 vendor = "Exact Online",
+    //                 product_type = exactProduct.ItemGroupDescription ?? "",
+    //                 tags = "exact-import",
+    //                 status = "active",
+    //                 variants = new[]
+    //                 {
+    //                 new
+    //                 {
+    //                     sku = exactProduct.Code,
+    //                     price = exactProduct.StandardSalesPrice?.ToString("F2") ?? "0.00",
+    //                     inventory_management = "shopify",
+    //                     inventory_quantity = (int)(exactProduct.Stock ?? 0),
+    //                     barcode = exactProduct.Barcode ?? "",
+    //                     weight = TryParseWeight(exactProduct.NetWeight),
+    //                     weight_unit = exactProduct.NetWeightUnit ?? "kg",
+    //                     taxable = ParseTaxable(exactProduct.IsTaxableItem)
+    //                 }
+    //             },
+    //                 images = string.IsNullOrEmpty(exactProduct.PictureUrl)
+    //                     ? null
+    //                     : new[] { new { src = exactProduct.PictureUrl } }
+    //             }
+    //         };
+
+    //         var jsonContent = new StringContent(JsonSerializer.Serialize(productData));
+    //         jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+    //         Console.WriteLine($"   📤 Shopify API'ye istek gönderiliyor...");
+
+    //         var response = await _client.PostAsync("products.json", jsonContent);
+    //         var responseContent = await response.Content.ReadAsStringAsync();
+
+    //         // Log dosyasına kaydet
+    //         if (!string.IsNullOrEmpty(logFilePath))
+    //         {
+    //             var logData = new
+    //             {
+    //                 Timestamp = DateTimeOffset.Now,
+    //                 Action = "CreateProduct",
+    //                 SKU = exactProduct.Code,
+    //                 Title = exactProduct.Description,
+    //                 Price = exactProduct.StandardSalesPrice,
+    //                 Stock = exactProduct.Stock,
+    //                 Success = response.IsSuccessStatusCode,
+    //                 StatusCode = (int)response.StatusCode,
+    //                 RequestPayload = productData,
+    //                 Response = responseContent,
+    //                 ProcessType = "NewProductCreation"
+    //             };
+
+    //             var logJson = JsonSerializer.Serialize(logData, _jsonOptions);
+
+    //             // Log dizinini oluştur
+    //             var logDirectory = Path.GetDirectoryName(logFilePath);
+    //             if (!string.IsNullOrEmpty(logDirectory) && !Directory.Exists(logDirectory))
+    //             {
+    //                 Directory.CreateDirectory(logDirectory);
+    //             }
+
+    //             await File.WriteAllTextAsync(logFilePath, logJson);
+    //             Console.WriteLine($"   📝 Log kaydedildi: {logFilePath}");
+    //         }
+
+    //         if (response.IsSuccessStatusCode)
+    //         {
+    //             // Response'dan ürün ID'sini parse et
+    //             using var responseDoc = JsonDocument.Parse(responseContent);
+    //             string productId = null;
+    //             string variantId = null;
+
+    //             if (responseDoc.RootElement.TryGetProperty("product", out var product))
+    //             {
+    //                 if (product.TryGetProperty("id", out var prodId))
+    //                 {
+    //                     productId = prodId.ToString();
+    //                 }
+
+    //                 if (product.TryGetProperty("variants", out var variants))
+    //                 {
+    //                     var firstVariant = variants.EnumerateArray().FirstOrDefault();
+    //                     if (firstVariant.ValueKind != JsonValueKind.Undefined &&
+    //                         firstVariant.TryGetProperty("id", out var varId))
+    //                     {
+    //                         variantId = varId.ToString();
+    //                     }
+    //                 }
+    //             }
+
+    //             Console.WriteLine($"   ✅ Ürün başarıyla oluşturuldu");
+    //             Console.WriteLine($"      - SKU: {exactProduct.Code}");
+    //             Console.WriteLine($"      - Title: {exactProduct.Description}");
+    //             Console.WriteLine($"      - Price: {exactProduct.StandardSalesPrice:F2}");
+    //             Console.WriteLine($"      - Stock: {exactProduct.Stock}");
+    //             Console.WriteLine($"      - Product ID: {productId}");
+    //             Console.WriteLine($"      - Variant ID: {variantId}");
+
+    //             return true;
+    //         }
+    //         else
+    //         {
+    //             Console.WriteLine($"   ❌ Ürün oluşturulamadı");
+    //             Console.WriteLine($"      - StatusCode: {response.StatusCode}");
+    //             Console.WriteLine($"      - Response: {responseContent}");
+
+    //             return false;
+    //         }
+    //     }
+    //     catch (HttpRequestException ex) when (ex.Message.Contains("429"))
+    //     {
+    //         Console.WriteLine($"   ⏳ Rate limit hatası: {ex.Message}");
+    //         return false;
+    //     }
+    //     catch (Exception ex)
+    //     {
+    //         Console.WriteLine($"   ❌ Exception: {ex.Message}");
+    //         Console.WriteLine($"      - StackTrace: {ex.StackTrace}");
+    //         return false;
+    //     }
+    // }
+    // public async Task<bool> CreateProductAsync(ExactProduct exactProduct, string logFilePath = null)
+    // {
+    //     try
+    //     {
+    //         Console.WriteLine($"🆕 Yeni ürün oluşturuluyor: SKU={exactProduct.Code}");
+
+    //         // ✅ Basit SKU kontrolü
+    //         var skuExists = await IsSkuExistsAsync(exactProduct.Code);
+
+    //         if (skuExists)
+    //         {
+    //             Console.WriteLine($"⚠️ Bu SKU zaten mevcut, ürün oluşturulmadı: {exactProduct.Code}");
+
+    //             // Log dosyasına kaydet
+    //             if (!string.IsNullOrEmpty(logFilePath))
+    //             {
+    //                 await AppendToLogFileAsync(logFilePath, new
+    //                 {
+    //                     Timestamp = DateTimeOffset.Now,
+    //                     Action = "CreateProduct_Skipped",
+    //                     SKU = exactProduct.Code,
+    //                     Title = exactProduct.Description,
+    //                     Reason = "SKU already exists in Shopify",
+    //                     ProcessType = "NewProductCreation"
+    //                 });
+
+    //                 Console.WriteLine($"   📝 Log kaydedildi: {logFilePath}");
+    //             }
+
+    //             return false;
+    //         }
+
+    //         Console.WriteLine($"✅ SKU mevcut değil, yeni ürün oluşturulacak");
+
+    //         // ✅ Ürün oluşturma kodu (değişmedi)
+    //         var productData = new
+    //         {
+    //             product = new
+    //             {
+    //                 title = exactProduct.Description ?? "Başlık Yok",
+    //                 body_html = exactProduct.ExtraDescription ?? "",
+    //                 vendor = "Exact Online",
+    //                 product_type = exactProduct.ItemGroupDescription ?? "",
+    //                 tags = "exact-import",
+    //                 status = "active",
+    //                 variants = new[]
+    //                 {
+    //                 new
+    //                 {
+    //                     sku = exactProduct.Code,
+    //                     price = exactProduct.StandardSalesPrice?.ToString("F2") ?? "0.00",
+    //                     inventory_management = "shopify",
+    //                     inventory_quantity = (int)(exactProduct.Stock ?? 0),
+    //                     barcode = exactProduct.Barcode ?? "",
+    //                     weight = TryParseWeight(exactProduct.NetWeight),
+    //                     weight_unit = exactProduct.NetWeightUnit ?? "kg",
+    //                     taxable = ParseTaxable(exactProduct.IsTaxableItem)
+    //                 }
+    //             },
+    //                 images = string.IsNullOrEmpty(exactProduct.PictureUrl)
+    //                     ? null
+    //                     : new[] { new { src = exactProduct.PictureUrl } }
+    //             }
+    //         };
+
+    //         var jsonContent = new StringContent(JsonSerializer.Serialize(productData));
+    //         jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+    //         Console.WriteLine($"   📤 Shopify API'ye istek gönderiliyor...");
+
+    //         var response = await _client.PostAsync("products.json", jsonContent);
+    //         var responseContent = await response.Content.ReadAsStringAsync();
+
+    //         // ✅ Log dosyasına kaydet (DÜZELTME YAPILAN YER)
+    //         if (!string.IsNullOrEmpty(logFilePath))
+    //         {
+    //             await AppendToLogFileAsync(logFilePath, new
+    //             {
+    //                 Timestamp = DateTimeOffset.Now,
+    //                 Action = "CreateProduct",
+    //                 SKU = exactProduct.Code,
+    //                 Title = exactProduct.Description,
+    //                 Price = exactProduct.StandardSalesPrice,
+    //                 Stock = exactProduct.Stock,
+    //                 Success = response.IsSuccessStatusCode,
+    //                 StatusCode = (int)response.StatusCode,
+    //                 RequestPayload = productData,
+    //                 Response = responseContent,
+    //                 ProcessType = "NewProductCreation"
+    //             });
+
+    //             Console.WriteLine($"   📝 Log kaydedildi: {logFilePath}");
+    //         }
+
+    //         if (response.IsSuccessStatusCode)
+    //         {
+    //             using var responseDoc = JsonDocument.Parse(responseContent);
+    //             string productId = null;
+    //             string variantId = null;
+
+    //             if (responseDoc.RootElement.TryGetProperty("product", out var product))
+    //             {
+    //                 if (product.TryGetProperty("id", out var prodId))
+    //                 {
+    //                     productId = prodId.ToString();
+    //                 }
+
+    //                 if (product.TryGetProperty("variants", out var variants))
+    //                 {
+    //                     var firstVariant = variants.EnumerateArray().FirstOrDefault();
+    //                     if (firstVariant.ValueKind != JsonValueKind.Undefined &&
+    //                         firstVariant.TryGetProperty("id", out var varId))
+    //                     {
+    //                         variantId = varId.ToString();
+    //                     }
+    //                 }
+    //             }
+
+    //             Console.WriteLine($"   ✅ Ürün başarıyla oluşturuldu");
+    //             Console.WriteLine($"      - SKU: {exactProduct.Code}");
+    //             Console.WriteLine($"      - Title: {exactProduct.Description}");
+    //             Console.WriteLine($"      - Price: {exactProduct.StandardSalesPrice:F2}");
+    //             Console.WriteLine($"      - Stock: {exactProduct.Stock}");
+    //             Console.WriteLine($"      - Product ID: {productId}");
+    //             Console.WriteLine($"      - Variant ID: {variantId}");
+
+    //             return true;
+    //         }
+    //         else
+    //         {
+    //             Console.WriteLine($"   ❌ Ürün oluşturulamadı");
+    //             Console.WriteLine($"      - StatusCode: {response.StatusCode}");
+    //             Console.WriteLine($"      - Response: {responseContent}");
+
+    //             return false;
+    //         }
+    //     }
+    //     catch (HttpRequestException ex) when (ex.Message.Contains("429"))
+    //     {
+    //         Console.WriteLine($"   ⏳ Rate limit hatası: {ex.Message}");
+    //         return false;
+    //     }
+    //     catch (Exception ex)
+    //     {
+    //         Console.WriteLine($"   ❌ Exception: {ex.Message}");
+    //         Console.WriteLine($"      - StackTrace: {ex.StackTrace}");
+    //         return false;
+    //     }
+    // }
+    public async Task<bool> CreateProductAsync(ExactProduct exactProduct, string logFilePath = null)
+{
+    try
+    {
+        Console.WriteLine($"🆕 Yeni ürün oluşturuluyor: SKU={exactProduct.Code}");
+
+        // ✅ Basit SKU kontrolü
+        var skuExists = await IsSkuExistsAsync(exactProduct.Code);
+
+        if (skuExists)
+        {
+            Console.WriteLine($"⚠️ Bu SKU zaten mevcut, ürün oluşturulmadı: {exactProduct.Code}");
+
+            // Log dosyasına kaydet
+            if (!string.IsNullOrEmpty(logFilePath))
+            {
+                await AppendToLogFileAsync(logFilePath, new
+                {
+                    Timestamp = DateTimeOffset.Now,
+                    Action = "CreateProduct_Skipped",
+                    SKU = exactProduct.Code,
+                    Title = exactProduct.Description,
+                    Reason = "SKU already exists in Shopify",
+                    ProcessType = "NewProductCreation"
+                });
+
+                Console.WriteLine($"   📝 Log kaydedildi: {logFilePath}");
+            }
+
+            return false;
+        }
+
+        Console.WriteLine($"✅ SKU mevcut değil, yeni ürün oluşturulacak");
+
+        // ✅ Ürün oluşturma kodu (images kısmı kaldırıldı)
+        var productData = new
+        {
+            product = new
+            {
+                title = exactProduct.Description ?? "Başlık Yok",
+                body_html = exactProduct.ExtraDescription ?? "",
+                vendor = "Exact Online",
+                product_type = exactProduct.ItemGroupDescription ?? "",
+                tags = "exact-import",
+                status = "active",
+                variants = new[]
+                {
+                    new
+                    {
+                        sku = exactProduct.Code,
+                        price = exactProduct.StandardSalesPrice?.ToString("F2") ?? "0.00",
+                        inventory_management = "shopify",
+                        inventory_quantity = (int)(exactProduct.Stock ?? 0),
+                        barcode = exactProduct.Barcode ?? "",
+                        weight = TryParseWeight(exactProduct.NetWeight),
+                        weight_unit = exactProduct.NetWeightUnit ?? "kg",
+                        taxable = ParseTaxable(exactProduct.IsTaxableItem)
+                    }
+                }
+                // ❌ images kısmı kaldırıldı
+            }
+        };
+
+        var jsonContent = new StringContent(JsonSerializer.Serialize(productData));
+        jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        Console.WriteLine($"   📤 Shopify API'ye istek gönderiliyor...");
+
+        var response = await _client.PostAsync("products.json", jsonContent);
+        var responseContent = await response.Content.ReadAsStringAsync();
+
+        // ✅ Log dosyasına kaydet
+        if (!string.IsNullOrEmpty(logFilePath))
+        {
+            await AppendToLogFileAsync(logFilePath, new
+            {
+                Timestamp = DateTimeOffset.Now,
+                Action = "CreateProduct",
+                SKU = exactProduct.Code,
+                Title = exactProduct.Description,
+                Price = exactProduct.StandardSalesPrice,
+                Stock = exactProduct.Stock,
+                Success = response.IsSuccessStatusCode,
+                StatusCode = (int)response.StatusCode,
+                RequestPayload = productData,
+                Response = responseContent,
+                ProcessType = "NewProductCreation"
+            });
+
+            Console.WriteLine($"   📝 Log kaydedildi: {logFilePath}");
+        }
+
+        if (response.IsSuccessStatusCode)
+        {
+            using var responseDoc = JsonDocument.Parse(responseContent);
+            string productId = null;
+            string variantId = null;
+
+            if (responseDoc.RootElement.TryGetProperty("product", out var product))
+            {
+                if (product.TryGetProperty("id", out var prodId))
+                {
+                    productId = prodId.ToString();
+                }
+
+                if (product.TryGetProperty("variants", out var variants))
+                {
+                    var firstVariant = variants.EnumerateArray().FirstOrDefault();
+                    if (firstVariant.ValueKind != JsonValueKind.Undefined &&
+                        firstVariant.TryGetProperty("id", out var varId))
+                    {
+                        variantId = varId.ToString();
+                    }
+                }
+            }
+
+            Console.WriteLine($"   ✅ Ürün başarıyla oluşturuldu");
+            Console.WriteLine($"      - SKU: {exactProduct.Code}");
+            Console.WriteLine($"      - Title: {exactProduct.Description}");
+            Console.WriteLine($"      - Price: {exactProduct.StandardSalesPrice:F2}");
+            Console.WriteLine($"      - Stock: {exactProduct.Stock}");
+            Console.WriteLine($"      - Product ID: {productId}");
+            Console.WriteLine($"      - Variant ID: {variantId}");
+
+            return true;
+        }
+        else
+        {
+            Console.WriteLine($"   ❌ Ürün oluşturulamadı");
+            Console.WriteLine($"      - StatusCode: {response.StatusCode}");
+            Console.WriteLine($"      - Response: {responseContent}");
+
+            return false;
+        }
+    }
+    catch (HttpRequestException ex) when (ex.Message.Contains("429"))
+    {
+        Console.WriteLine($"   ⏳ Rate limit hatası: {ex.Message}");
+        return false;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"   ❌ Exception: {ex.Message}");
+        Console.WriteLine($"      - StackTrace: {ex.StackTrace}");
+        return false;
+    }
+}
+    // get shopify product by sku
+    public async Task<List<object>> GetProductsBySkuAsync(string sku, int limit = 250)
+    {
+        var allProductsDoc = await GetAllProductsRawAsync(limit);
+        var matchedProducts = new List<object>();
+
+        if (allProductsDoc.RootElement.TryGetProperty("products", out var products))
+        {
+            foreach (var product in products.EnumerateArray())
+            {
+                if (product.TryGetProperty("variants", out var variants))
+                {
+                    foreach (var variant in variants.EnumerateArray())
+                    {
+                        if (variant.TryGetProperty("sku", out var skuElement) &&
+                            skuElement.GetString() == sku)
+                        {
+                            // Ürün bilgilerini sadeleştirerek ekle
+                            matchedProducts.Add(new
+                            {
+                                ProductId = product.TryGetProperty("id", out var prodId) ? prodId.ToString() : null,
+                                ProductTitle = product.TryGetProperty("title", out var title) ? title.GetString() : null,
+                                ProductStatus = product.TryGetProperty("status", out var status) ? status.GetString() : null,
+                                VariantId = variant.TryGetProperty("id", out var varId) ? varId.ToString() : null,
+                                SKU = sku,
+                                Price = variant.TryGetProperty("price", out var price) ? price.GetString() : null,
+                                InventoryQuantity = variant.TryGetProperty("inventory_quantity", out var stock) ? stock.GetInt32() : 0,
+                                CreatedAt = product.TryGetProperty("created_at", out var created) ? created.GetString() : null,
+                                UpdatedAt = product.TryGetProperty("updated_at", out var updated) ? updated.GetString() : null
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        allProductsDoc.Dispose();
+        return matchedProducts;
+    }
+
+
+    //all shopify products
+    public async Task<JsonDocument> GetAllProductsRawAsync(int limit = 250)
+    {
+        // Shopify API limiti maksimum 250'dir
+        if (limit > 250)
+        {
+            Console.WriteLine($"⚠️ Uyarı: Limit {limit} olarak verildi, ancak Shopify maksimum 250'e izin verir. 250 kullanılacak.");
+            limit = 250;
+        }
+        if (limit < 1)
+        {
+            Console.WriteLine($"⚠️ Uyarı: Limit {limit} geçersiz. Varsayılan 250 kullanılacak.");
+            limit = 250;
+        }
+
+        var allProductsJson = new List<JsonElement>();
+        string endpoint = $"products.json?limit={limit}";
+        int pageCount = 0;
+        int totalProducts = 0;
+        int retryCount = 0;
+        const int maxRetries = 3;
+
+        Console.WriteLine($"🔄 Tüm ürünler getiriliyor (sayfa başına {limit} ürün)...");
+
+        while (!string.IsNullOrEmpty(endpoint))
+        {
+            pageCount++;
+            Console.WriteLine($"📄 Sayfa {pageCount} getiriliyor: {endpoint}");
+
+            try
+            {
+                var response = await _client.GetAsync(endpoint);
+
+                // 429 Rate Limit hatası için özel işlem
+                if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    if (retryCount < maxRetries)
+                    {
+                        retryCount++;
+                        Console.WriteLine($"⏳ Rate limit aşıldı, {retryCount}. deneme için 60 saniye bekleniyor...");
+                        await Task.Delay(60000); // 60 saniye bekle
+                        pageCount--; // Sayfa sayacını geri al
+                        continue;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"❌ Maximum retry sayısına ulaşıldı ({maxRetries})");
+                        throw new Exception($"Rate limit aşıldı ve {maxRetries} deneme başarısız");
+                    }
+                }
+
+                response.EnsureSuccessStatusCode();
+                retryCount = 0; // Başarılı istek sonrası retry sayacını sıfırla
+
+                string jsonResponse = await response.Content.ReadAsStringAsync();
+                using var document = JsonDocument.Parse(jsonResponse);
+
+                if (document.RootElement.TryGetProperty("products", out var products))
+                {
+                    int pageProductCount = 0;
+                    foreach (var product in products.EnumerateArray())
+                    {
+                        allProductsJson.Add(product.Clone());
+                        pageProductCount++;
+                        totalProducts++;
+                    }
+
+                    Console.WriteLine($"   ✅ Bu sayfada {pageProductCount} ürün alındı. Toplam: {totalProducts}");
+
+                    // Eğer sayfa belirlenen limitten az ürün döndürdüyse, son sayfadayız demektir
+                    // if (pageProductCount < limit)
+                    // {
+                    //     Console.WriteLine($"   🏁 Son sayfa tespit edildi (bu sayfada {pageProductCount} ürün)");
+                    //     break;
+                    // }
+                }
+                else
+                {
+                    Console.WriteLine("   ⚠️ Bu sayfada 'products' property bulunamadı");
+                    break;
+                }
+
+                // Pagination - Link header'dan next URL'i al
+                endpoint = null;
+                if (response.Headers.TryGetValues("Link", out var values))
+                {
+                    string linkHeader = values.FirstOrDefault() ?? "";
+                    Console.WriteLine($"   🔗 Link Header: {linkHeader}");
+
+                    if (linkHeader.Contains("rel=\"next\""))
+                    {
+                        var parts = linkHeader.Split(',');
+                        var nextLink = parts.FirstOrDefault(p => p.Contains("rel=\"next\""));
+                        if (nextLink != null)
+                        {
+                            var start = nextLink.IndexOf('<') + 1;
+                            var end = nextLink.IndexOf('>') - start;
+                            if (start > 0 && end > 0)
+                            {
+                                var nextUrl = nextLink.Substring(start, end);
+
+                                // Full URL'den relative path'e çevir
+                                if (nextUrl.Contains("/admin/api/"))
+                                {
+                                    var apiIndex = nextUrl.IndexOf("/admin/api/");
+                                    var versionEndIndex = nextUrl.IndexOf('/', apiIndex + 11); // "/admin/api/" + version
+                                    if (versionEndIndex > 0)
+                                    {
+                                        endpoint = nextUrl.Substring(versionEndIndex + 1);
+                                    }
+                                    else
+                                    {
+                                        endpoint = nextUrl.Split("/admin/api/").Last().Split('/').Skip(1).Aggregate((a, b) => $"{a}/{b}");
+                                    }
+                                }
+                                else
+                                {
+                                    endpoint = nextUrl;
+                                }
+
+                                Console.WriteLine($"   ➡️ Sonraki sayfa: {endpoint}");
+                            }
+                            else
+                            {
+                                Console.WriteLine("   ❌ Link header parse edilemedi");
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("   🏁 Link header'da 'next' bulunamadı - son sayfa");
+                        break;
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("   🏁 Link header bulunamadı - son sayfa");
+                    break;
+                }
+
+                // Rate limiting için daha uzun bekleme
+                Console.WriteLine("   ⏳ Rate limit için 2 saniye bekleniyor...");
+                await Task.Delay(2000); // 2 saniye bekleme
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Sayfa {pageCount} alınırken hata: {ex.Message}");
+                throw;
+            }
+        }
+
+        Console.WriteLine($"✅ Toplam {totalProducts} ürün {pageCount} sayfada alındı");
+
+        // Tüm ürünleri tek bir JSON'da birleştir
+        var finalJson = new { products = allProductsJson };
+        string finalJsonString = JsonSerializer.Serialize(finalJson, _jsonOptions);
+
+        var result = JsonDocument.Parse(finalJsonString);
+        Console.WriteLine($"📦 JSON dokümani oluşturuldu - {allProductsJson.Count} ürün");
+
+        return result;
+    }
+
+    public async Task SaveRawProductsToFileAsync(string filePath)
+    {
+        var rawProductsDoc = await GetAllProductsRawAsync();
+
+        // Ürün sayısını konsola yazdır
+        if (rawProductsDoc.RootElement.TryGetProperty("products", out var products))
+        {
+            Console.WriteLine($"Toplam ürün: {products.GetArrayLength()}");
+        }
+
+        string jsonString = JsonSerializer.Serialize(rawProductsDoc.RootElement, _jsonOptions);
+        await File.WriteAllTextAsync(filePath, jsonString);
+
+        Console.WriteLine($"Ham ürün verileri {filePath} dosyasına kaydedildi.");
+
+        rawProductsDoc.Dispose();
+    }
+
+    // update stock by sku
+    public async Task UpdateProductStockBySkuAndSaveRawAsync(string sku, int stock, string filePath)
+    {
+        var rawProductsDoc = await GetAllProductsRawAsync();
+        var variantsToUpdate = new List<(string variantId, string inventoryItemId, int currentStock)>();
+
+        // SKU'yu tüm ürünlerde ara (hem tekil hem varyant)
+        if (rawProductsDoc.RootElement.TryGetProperty("products", out var products))
+        {
+            foreach (var product in products.EnumerateArray())
+            {
+                // Variants içinde ara
+                if (product.TryGetProperty("variants", out var variants))
+                {
+                    foreach (var variant in variants.EnumerateArray())
+                    {
+                        if (variant.TryGetProperty("sku", out var skuElement) &&
+                            skuElement.GetString() == sku)
+                        {
+                            string variantId = variant.TryGetProperty("id", out var idElement) ? idElement.ToString() : null;
+                            string inventoryItemId = variant.TryGetProperty("inventory_item_id", out var invItemElement) ? invItemElement.ToString() : null;
+                            int currentStock = variant.TryGetProperty("inventory_quantity", out var stockElement) ? stockElement.GetInt32() : 0;
+
+                            if (!string.IsNullOrEmpty(variantId) && !string.IsNullOrEmpty(inventoryItemId))
+                            {
+                                variantsToUpdate.Add((variantId, inventoryItemId, currentStock));
+                                Console.WriteLine($"Bulunan variant - Product: {(product.TryGetProperty("title", out var title) ? title.GetString() : "N/A")}, Variant ID: {variantId}, Current Stock: {currentStock}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (variantsToUpdate.Count == 0)
+        {
+            Console.WriteLine($"SKU '{sku}' hiçbir üründe bulunamadı.");
+            rawProductsDoc.Dispose();
+            return;
+        }
+
+        Console.WriteLine($"SKU '{sku}' için {variantsToUpdate.Count} adet variant bulundu. Hepsini güncelleniyor...");
+
+        try
+        {
+            // Location ID'yi al
+            var locationsResponse = await _client.GetAsync("locations.json");
+            locationsResponse.EnsureSuccessStatusCode();
+            var locationsContent = await locationsResponse.Content.ReadAsStringAsync();
+            var locationsDoc = JsonDocument.Parse(locationsContent);
+
+            string locationId = null;
+            if (locationsDoc.RootElement.TryGetProperty("locations", out var locations))
+            {
+                var firstLocation = locations.EnumerateArray().FirstOrDefault();
+                if (firstLocation.ValueKind != JsonValueKind.Undefined)
+                {
+                    if (firstLocation.TryGetProperty("id", out var locIdElement))
+                    {
+                        locationId = locIdElement.ToString();
+                    }
+                }
+            }
+            locationsDoc.Dispose();
+
+            if (string.IsNullOrEmpty(locationId))
+            {
+                Console.WriteLine("Location ID bulunamadı.");
+                rawProductsDoc.Dispose();
+                return;
+            }
+
+            Console.WriteLine($"Location ID: {locationId}");
+
+            // Her variant için stok güncelle
+            int successCount = 0;
+            foreach (var (variantId, inventoryItemId, currentStock) in variantsToUpdate)
+            {
+                try
+                {
+                    // 1. Inventory item'ı track edilen hale getir
+                    var trackPayload = new
+                    {
+                        inventory_item = new
+                        {
+                            id = inventoryItemId,
+                            tracked = true
+                        }
+                    };
+
+                    var trackContent = new StringContent(JsonSerializer.Serialize(trackPayload));
+                    trackContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+                    var trackResponse = await _client.PutAsync($"inventory_items/{inventoryItemId}.json", trackContent);
+                    // Track response'u kontrol etmiyoruz çünkü zaten tracked olabilir
+
+                    // 2. Inventory level'ı güncelle
+                    var inventoryPayload = new
+                    {
+                        location_id = locationId,
+                        inventory_item_id = inventoryItemId,
+                        available = stock
+                    };
+
+                    var inventoryContent = new StringContent(JsonSerializer.Serialize(inventoryPayload));
+                    inventoryContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+                    var inventoryResponse = await _client.PostAsync("inventory_levels/set.json", inventoryContent);
+                    inventoryResponse.EnsureSuccessStatusCode();
+
+                    var responseContent = await inventoryResponse.Content.ReadAsStringAsync();
+                    Console.WriteLine($"✅ Variant ID {variantId} - Stok {currentStock}'den {stock}'e güncellendi");
+                    Console.WriteLine($"   Inventory Item ID: {inventoryItemId}");
+                    Console.WriteLine($"   Response: {responseContent}");
+
+                    successCount++;
+                }
+                catch (Exception variantEx)
+                {
+                    Console.WriteLine($"❌ Variant ID {variantId} güncellenirken hata: {variantEx.Message}");
+                }
+            }
+
+            Console.WriteLine($"✅ SKU '{sku}' için {successCount}/{variantsToUpdate.Count} variant başarıyla güncellendi.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Genel stok güncelleme hatası: {ex.Message}");
+            throw;
+        }
+
+        // Ham veriyi dosyaya yaz
+        string jsonString = JsonSerializer.Serialize(rawProductsDoc.RootElement, _jsonOptions);
+        await File.WriteAllTextAsync(filePath, jsonString);
+        Console.WriteLine($"📁 Ham ürün verileri {filePath} dosyasına yazıldı.");
+
+        rawProductsDoc.Dispose();
+    }
+
+
+    // 1. Exponential backoff ile retry mekanizması ekleyin
+    private async Task<bool> ExecuteWithRetryAsync(Func<Task> operation, string operationName, int maxRetries = 3)
+    {
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                await operation();
+                return true;
+            }
+            catch (HttpRequestException ex) when (ex.Message.Contains("429"))
+            {
+                if (attempt == maxRetries)
+                {
+                    Console.WriteLine($"❌ {operationName} - Maksimum deneme sayısına ulaşıldı: {ex.Message}");
+                    return false;
+                }
+
+                // Exponential backoff: 2^attempt seconds + random jitter
+                var random = new Random();
+                var baseDelay = Math.Pow(2, attempt) * 1000; // 2, 4, 8 saniye
+                var jitter = random.Next(0, 1000); // 0-1 saniye random
+                var totalDelay = (int)(baseDelay + jitter);
+
+                Console.WriteLine($"⏳ {operationName} - 429 hatası, {attempt}/{maxRetries} deneme. {totalDelay}ms bekleniyor...");
+                await Task.Delay(totalDelay);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ {operationName} - Beklenmeyen hata: {ex.Message}");
+                return false;
+            }
+        }
+        return false;
+    }
+
+    // 2. Geliştirilmiş batch update metodu
+    public async Task<BatchUpdateResult> UpdateMultipleStocksBatchAsync(
+        List<Dictionary<string, object>> exactItems,
+        JsonDocument shopifyProducts,
+        string filePath)
+    {
+        Console.WriteLine("🔄 Batch stok güncelleme başlıyor...");
+
+        var result = new BatchUpdateResult();
+        var updatedCodes = new List<string>();
+
+        // SKU -> Stock mapping oluştur
+        var stockUpdates = new Dictionary<string, int>();
+        foreach (var item in exactItems)
+        {
+            string code = item.ContainsKey("Code") ? item["Code"].ToString() : "";
+            double stock = item.ContainsKey("Stock") ? Convert.ToDouble(item["Stock"]) : 0;
+            int stockInt = Convert.ToInt32(stock);
+
+            if (!string.IsNullOrEmpty(code))
+            {
+                stockUpdates[code] = stockInt;
+            }
+        }
+
+        Console.WriteLine($"📊 {stockUpdates.Count} adet ürün stok güncellemesi için hazırlandı");
+
+        // Location ID'yi al
+        var locationId = await GetLocationIdAsync();
+        if (string.IsNullOrEmpty(locationId))
+        {
+            throw new Exception("Location ID bulunamadı");
+        }
+
+        Console.WriteLine($"📍 Location ID: {locationId}");
+
+        // Update tasks listesi oluştur
+        var updateTasks = PrepareUpdateTasks(shopifyProducts, stockUpdates);
+
+        Console.WriteLine($"🎯 {updateTasks.Count} variant stok güncellemesi yapılacak");
+
+        // Rate limiting için değişkenler
+        int processedCount = 0;
+        var skuSuccessCount = new Dictionary<string, int>();
+        var skuErrorCount = new Dictionary<string, int>();
+        var rateLimitTracker = new RateLimitTracker();
+
+        // Batch güncelleme - Daha agresif rate limiting ile
+        foreach (var (sku, variantId, inventoryItemId, newStock, productTitle, currentStock) in updateTasks)
+        {
+            // Rate limit kontrolü
+            await rateLimitTracker.WaitIfNeededAsync();
+
+            var success = await ExecuteWithRetryAsync(async () =>
+            {
+                // 1. Inventory item'ı track edilen hale getir
+                await TrackInventoryItemAsync(inventoryItemId);
+
+                // Requests arası ek bekleme
+                await Task.Delay(200);
+
+                // 2. Inventory level'ı güncelle
+                await UpdateInventoryLevelAsync(locationId, inventoryItemId, newStock);
+
+            }, $"SKU {sku} Variant {variantId}");
+
+            if (success)
+            {
+                result.SuccessCount++;
+
+                if (!skuSuccessCount.ContainsKey(sku))
+                {
+                    skuSuccessCount[sku] = 0;
+                    updatedCodes.Add(sku);
+                }
+                skuSuccessCount[sku]++;
+
+                Console.WriteLine($"✅ Variant ID {variantId} - SKU {sku} - Stok {currentStock}'den {newStock}'e güncellendi");
+            }
+            else
+            {
+                result.ErrorCount++;
+
+                if (!skuErrorCount.ContainsKey(sku))
+                    skuErrorCount[sku] = 0;
+                skuErrorCount[sku]++;
+
+                Console.WriteLine($"❌ Variant ID {variantId} - SKU {sku} güncellenemedi");
+            }
+
+            processedCount++;
+
+            // Progress raporu
+            if (processedCount % 25 == 0) // Daha sık rapor
+            {
+                Console.WriteLine($"📈 İlerleme: {processedCount}/{updateTasks.Count} variant işlendi");
+                Console.WriteLine($"   ✅ Başarılı: {result.SuccessCount} | ❌ Başarısız: {result.ErrorCount}");
+            }
+
+            // Her request sonrası minimum bekleme
+            await Task.Delay(1000); // 500ms'den 1000ms'ye çıkarıldı
+        }
+
+        result.UpdatedCodes = updatedCodes;
+
+        // Sonuç raporları
+        WriteResults(filePath, shopifyProducts, result, updateTasks.Count, updatedCodes.Count, skuSuccessCount);
+
+        return result;
+    }
+
+    // 3. Rate limit tracker sınıfı
+    public class RateLimitTracker
+    {
+        private readonly Queue<DateTime> _requestTimes = new Queue<DateTime>();
+        private readonly int _maxRequestsPerSecond = 2; // Shopify limit'i 4/sec, güvenli olmak için 2 kullanıyoruz
+        private readonly object _lock = new object();
+
+        public async Task WaitIfNeededAsync()
+        {
+            lock (_lock)
+            {
+                var now = DateTime.UtcNow;
+
+                // 1 saniyeden eski requestleri temizle
+                while (_requestTimes.Count > 0 && (now - _requestTimes.Peek()).TotalSeconds >= 1)
+                {
+                    _requestTimes.Dequeue();
+                }
+
+                // Rate limit kontrolü
+                if (_requestTimes.Count >= _maxRequestsPerSecond)
+                {
+                    var oldestRequest = _requestTimes.Peek();
+                    var waitTime = TimeSpan.FromSeconds(1) - (now - oldestRequest);
+
+                    if (waitTime.TotalMilliseconds > 0)
+                    {
+                        Console.WriteLine($"⏳ Rate limit koruması - {waitTime.TotalMilliseconds:F0}ms bekleniyor");
+                        Task.Delay(waitTime).Wait();
+                    }
+                }
+
+                _requestTimes.Enqueue(DateTime.UtcNow);
+            }
+        }
+    }
+
+    // 4. Yardımcı metodlar
+    private List<(string sku, string variantId, string inventoryItemId, int newStock, string productTitle, int currentStock)> PrepareUpdateTasks(
+        JsonDocument shopifyProducts,
+        Dictionary<string, int> stockUpdates)
+    {
+        var updateTasks = new List<(string sku, string variantId, string inventoryItemId, int newStock, string productTitle, int currentStock)>();
+        var processedSkus = new HashSet<string>();
+
+        if (shopifyProducts.RootElement.TryGetProperty("products", out var products))
+        {
+            foreach (var product in products.EnumerateArray())
+            {
+                var productTitle = product.TryGetProperty("title", out var titleElement) ? titleElement.GetString() : "N/A";
+
+                if (product.TryGetProperty("variants", out var variants))
+                {
+                    foreach (var variant in variants.EnumerateArray())
+                    {
+                        if (variant.TryGetProperty("sku", out var skuElement))
+                        {
+                            string sku = skuElement.GetString();
+                            if (!string.IsNullOrEmpty(sku) && stockUpdates.ContainsKey(sku))
+                            {
+                                // Variant bilgilerini al
+                                string variantId = variant.TryGetProperty("id", out var idElement) ? idElement.ToString() : null;
+                                string inventoryItemId = variant.TryGetProperty("inventory_item_id", out var invItemElement) ? invItemElement.ToString() : null;
+                                int currentStock = variant.TryGetProperty("inventory_quantity", out var stockElement) ? stockElement.GetInt32() : 0;
+
+                                if (!string.IsNullOrEmpty(variantId) && !string.IsNullOrEmpty(inventoryItemId))
+                                {
+                                    int newStock = stockUpdates[sku];
+                                    updateTasks.Add((sku, variantId, inventoryItemId, newStock, productTitle, currentStock));
+
+                                    // Çoklu SKU durumunu logla
+                                    if (processedSkus.Contains(sku))
+                                    {
+                                        Console.WriteLine($"🔄 Çoklu variant tespit edildi - SKU: {sku}, Product: {productTitle}, Variant ID: {variantId}, Mevcut Stok: {currentStock}");
+                                    }
+                                    else
+                                    {
+                                        processedSkus.Add(sku);
+                                        Console.WriteLine($"📦 SKU bulundu - {sku}, Product: {productTitle}, Mevcut Stok: {currentStock}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Çoklu SKU raporu
+        var duplicateSkus = updateTasks.GroupBy(x => x.sku)
+                                       .Where(g => g.Count() > 1)
+                                       .Select(g => new { SKU = g.Key, Count = g.Count() })
+                                       .ToList();
+
+        if (duplicateSkus.Any())
+        {
+            Console.WriteLine("📋 Çoklu variant'a sahip SKU'lar:");
+            foreach (var dup in duplicateSkus)
+            {
+                Console.WriteLine($"   - {dup.SKU}: {dup.Count} variant");
+            }
+        }
+
+        return updateTasks;
+    }
+
+    private async Task<string> GetLocationIdAsync()
+    {
+        var locationsResponse = await _client.GetAsync("locations.json");
+        locationsResponse.EnsureSuccessStatusCode();
+        var locationsContent = await locationsResponse.Content.ReadAsStringAsync();
+        var locationsDoc = JsonDocument.Parse(locationsContent);
+
+        string locationId = null;
+        if (locationsDoc.RootElement.TryGetProperty("locations", out var locations))
+        {
+            var firstLocation = locations.EnumerateArray().FirstOrDefault();
+            if (firstLocation.ValueKind != JsonValueKind.Undefined)
+            {
+                locationId = firstLocation.GetProperty("id").ToString();
+            }
+        }
+        locationsDoc.Dispose();
+
+        return locationId;
+    }
+
+    private async Task TrackInventoryItemAsync(string inventoryItemId)
+    {
+        var trackPayload = new
+        {
+            inventory_item = new
+            {
+                id = inventoryItemId,
+                tracked = true
+            }
+        };
+
+        var trackContent = new StringContent(JsonSerializer.Serialize(trackPayload));
+        trackContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        var trackResponse = await _client.PutAsync($"inventory_items/{inventoryItemId}.json", trackContent);
+        // Track response'u kontrol etmiyoruz çünkü zaten tracked olabilir
+    }
+
+    private async Task UpdateInventoryLevelAsync(string locationId, string inventoryItemId, int newStock)
+    {
+        var inventoryPayload = new
+        {
+            location_id = locationId,
+            inventory_item_id = inventoryItemId,
+            available = newStock
+        };
+
+        var inventoryContent = new StringContent(JsonSerializer.Serialize(inventoryPayload));
+        inventoryContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        var inventoryResponse = await _client.PostAsync("inventory_levels/set.json", inventoryContent);
+        inventoryResponse.EnsureSuccessStatusCode();
+    }
+
+    private void WriteResults(string filePath, JsonDocument shopifyProducts, BatchUpdateResult result,
+        int totalTasks, int uniqueSkuCount, Dictionary<string, int> skuSuccessCount)
+    {
+        // Detaylı rapor
+        Console.WriteLine($"🎉 Batch güncelleme tamamlandı:");
+        Console.WriteLine($"   📊 Toplam variant: {totalTasks}");
+        Console.WriteLine($"   ✅ Başarılı variant: {result.SuccessCount}");
+        Console.WriteLine($"   ❌ Başarısız variant: {result.ErrorCount}");
+        Console.WriteLine($"   🏷️ İşlenen benzersiz SKU: {uniqueSkuCount}");
+
+        if (skuSuccessCount.Any())
+        {
+            Console.WriteLine("📈 SKU başına başarı detayları:");
+            foreach (var kvp in skuSuccessCount.Take(5))
+            {
+                Console.WriteLine($"   - {kvp.Key}: {kvp.Value} variant başarılı");
+            }
+            if (skuSuccessCount.Count > 5)
+                Console.WriteLine($"   ... ve {skuSuccessCount.Count - 5} SKU daha");
+        }
+
+        // Ham veriyi dosyaya yaz
+        try
+        {
+            string jsonString = JsonSerializer.Serialize(shopifyProducts.RootElement, _jsonOptions);
+            File.WriteAllText(filePath, jsonString);
+            Console.WriteLine($"📁 Ham ürün verileri {filePath} dosyasına yazıldı");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Dosya yazma hatası: {ex.Message}");
+        }
+    }
+
+
+    //
+    public async Task<bool> IsSkuExistsAsync(string sku)
+    {
+        try
+        {
+            Console.WriteLine($"🔍 SKU kontrol ediliyor: {sku}");
+
+            // GraphQL ile SKU'yu ara
+            var query = @"
+        {
+          productVariants(first: 1, query: ""sku:'" + sku + @"'"") {
+            edges {
+              node {
+                id
+                sku
+              }
+            }
+          }
+        }";
+
+            var payload = new { query = query };
+            var jsonContent = new StringContent(JsonSerializer.Serialize(payload));
+            jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+            var response = await _client.PostAsync("graphql.json", jsonContent);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"⚠️ GraphQL isteği başarısız: {response.StatusCode}");
+                return false;
+            }
+
+            var responseContent = await response.Content.ReadAsStringAsync();
+            var result = JsonSerializer.Deserialize<JsonElement>(responseContent);
+
+            // Sonuç var mı kontrol et
+            if (result.TryGetProperty("data", out var data) &&
+                data.TryGetProperty("productVariants", out var variants) &&
+                variants.TryGetProperty("edges", out var edges))
+            {
+                var edgesArray = edges.EnumerateArray().ToList();
+
+                if (edgesArray.Any())
+                {
+                    var firstNode = edgesArray.First().GetProperty("node");
+                    var foundSku = firstNode.TryGetProperty("sku", out var skuProp)
+                        ? skuProp.GetString()
+                        : null;
+
+                    Console.WriteLine($"✅ SKU bulundu: {foundSku}");
+                    return true;
+                }
+            }
+
+            Console.WriteLine($"❌ SKU bulunamadı: {sku}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ SKU kontrol hatası: {ex.Message}");
+            // Hata durumunda false döndür (güvenli taraf)
+            return false;
+        }
+    }
+
+    //grapql deneme
+    // Çoklu SKU durumunu handle eden gelişmiş arama
+    public async Task<ProductSearchResult> GetProductBySkuWithDuplicateHandlingAsync(string sku)
+    {
+        try
+        {
+            // GraphQL ile tüm eşleşen variant'ları getir
+            var query = @"
+        {
+          productVariants(first: 10, query: ""sku:'" + sku + @"'"") {
+            edges {
+              node {
+                id
+                sku
+                price
+                inventoryQuantity
+                product {
+                  id
+                  title
+                  status
+                  createdAt
+                  updatedAt
+                  variants(first: 10) {
+                    edges {
+                      node {
+                        id
+                        sku
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }";
+
+            var payload = new { query = query };
+            var jsonContent = new StringContent(JsonSerializer.Serialize(payload));
+            jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+            var response = await _client.PostAsync("graphql.json", jsonContent);
+            response.EnsureSuccessStatusCode();
+
+            var responseContent = await response.Content.ReadAsStringAsync();
+            var result = JsonSerializer.Deserialize<JsonElement>(responseContent);
+
+            var matches = new List<ProductInfo>();
+
+            if (result.TryGetProperty("data", out var data) &&
+                data.TryGetProperty("productVariants", out var variants) &&
+                variants.TryGetProperty("edges", out var edges))
+            {
+                foreach (var edge in edges.EnumerateArray())
+                {
+                    var node = edge.GetProperty("node");
+                    var product = node.GetProperty("product");
+
+                    // Bu ürünün kaç variant'ı var?
+                    int totalVariants = 0;
+                    if (product.TryGetProperty("variants", out var productVariants) &&
+                        productVariants.TryGetProperty("edges", out var variantEdges))
+                    {
+                        totalVariants = variantEdges.GetArrayLength();
+                    }
+
+                    var matchInfo = new ProductInfo
+                    {
+                        ProductId = product.TryGetProperty("id", out var pId) ? pId.GetString() : null,
+                        ProductTitle = product.TryGetProperty("title", out var title) ? title.GetString() : null,
+                        ProductStatus = product.TryGetProperty("status", out var status) ? status.GetString() : null,
+                        VariantId = node.TryGetProperty("id", out var vId) ? vId.GetString() : null,
+                        SKU = sku,
+                        Price = node.TryGetProperty("price", out var price) ? price.GetString() : null,
+                        InventoryQuantity = node.TryGetProperty("inventoryQuantity", out var stock) ? stock.GetInt32() : 0,
+                        CreatedAt = product.TryGetProperty("createdAt", out var created) ? created.GetString() : null,
+                        UpdatedAt = product.TryGetProperty("updatedAt", out var updated) ? updated.GetString() : null,
+                        TotalVariants = totalVariants,
+                        ProductType = totalVariants == 1 ? "SingleProduct" : "MultiVariant",
+                        SearchMethod = "GraphQL_Multiple"
+                    };
+
+                    matches.Add(matchInfo);
+                }
+            }
+
+            // Sonuçları analiz et ve en uygun olanı döndür
+            return AnalyzeAndSelectBestMatch(sku, matches);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"GraphQL çoklu arama hatası: {ex.Message}");
+            return new ProductSearchResult
+            {
+                Found = false,
+                SKU = sku,
+                Error = ex.Message
+            };
+        }
+    }
+
+    private ProductSearchResult AnalyzeAndSelectBestMatch(string sku, List<ProductInfo> matches)
+    {
+        if (!matches.Any())
+        {
+            return new ProductSearchResult
+            {
+                Found = false,
+                SKU = sku,
+                Reason = "No matches found"
+            };
+        }
+
+        if (matches.Count == 1)
+        {
+            var singleMatch = matches.First();
+            return new ProductSearchResult
+            {
+                Found = true,
+                SKU = sku,
+                Match = singleMatch,
+                AllMatches = matches,
+                DuplicateCount = 1,
+                Selection = "Single match"
+            };
+        }
+
+        // Çoklu eşleşme durumu - önceliklendirme yaparak seç
+        Console.WriteLine($"⚠️ SKU '{sku}' için {matches.Count} eşleşme bulundu");
+
+        var prioritizedMatches = matches.Select(match =>
+        {
+            int priority = 0;
+
+            // Öncelik 1: Tekli ürünler öncelikli (genelde asıl ürün budur)
+            if (match.ProductType == "SingleProduct")
+                priority += 100;
+
+            // Öncelik 2: Active ürünler öncelikli
+            if (match.ProductStatus == "active")
+                priority += 50;
+
+            // Öncelik 3: Daha yeni ürünler öncelikli
+            if (DateTime.TryParse(match.UpdatedAt, out DateTime updatedDate))
+            {
+                var daysSinceUpdate = (DateTime.UtcNow - updatedDate).TotalDays;
+                priority += Math.Max(0, 30 - (int)daysSinceUpdate); // Son 30 gün içinde güncellenenler
+            }
+
+            return new { Match = match, Priority = priority };
+        }).OrderByDescending(x => x.Priority).ToList();
+
+        var selectedMatch = prioritizedMatches.First().Match;
+
+        // Tüm eşleşmeleri logla
+        foreach (var match in matches)
+        {
+            Console.WriteLine($"  - Product: {match.ProductTitle} | Type: {match.ProductType} | Status: {match.ProductStatus} | ID: {match.ProductId}");
+        }
+
+        Console.WriteLine($"✅ Seçilen: {selectedMatch.ProductTitle} ({selectedMatch.ProductType})");
+
+        return new ProductSearchResult
+        {
+            Found = true,
+            SKU = sku,
+            Match = selectedMatch,
+            AllMatches = matches,
+            DuplicateCount = matches.Count,
+            Selection = "Prioritized selection",
+            SelectionReason = $"Selected {selectedMatch.ProductType} product with status {selectedMatch.ProductStatus}"
+        };
+    }
+
+
+    public async Task UpdateProductTitleAndPriceBySkuAndSaveRawAsync(string sku, string newTitle, decimal newPrice, string filePath)
+    {
+        var logEntry = new
+        {
+            Timestamp = DateTimeOffset.Now,
+            Sku = sku,
+            Title = newTitle,
+            Price = newPrice,
+            Status = "",
+            UpdatedCount = 0,
+            UpdatedProducts = new List<string>(),
+            ProcessType = "BackgroundService"
+        };
+
+        try
+        {
+            // GetProductBySkuWithDuplicateHandlingAsync metodunu kullanarak ürünü bul
+            var searchResult = await GetProductBySkuWithDuplicateHandlingAsync(sku);
+
+            if (!searchResult.Found)
+            {
+                Console.WriteLine($"SKU '{sku}' bulunamadı. Sebep: {searchResult.Reason}");
+                logEntry = new
+                {
+                    Timestamp = DateTimeOffset.Now,
+                    Sku = sku,
+                    Title = newTitle,
+                    Price = newPrice,
+                    Status = $"SKU bulunamadı: {searchResult.Reason}",
+                    UpdatedCount = 0,
+                    UpdatedProducts = new List<string>(),
+                    ProcessType = "BackgroundService"
+                };
+            }
+            else
+            {
+                var allMatches = searchResult.AllMatches ?? new List<ProductInfo> { searchResult.Match };
+                var successfulUpdates = new List<string>();
+                var failedUpdates = new List<string>();
+
+                Console.WriteLine($"📦 SKU '{sku}' için {allMatches.Count} eşleşme bulundu, hepsini güncelliyorum...");
+
+                foreach (var product in allMatches)
+                {
+                    try
+                    {
+                        var productIdToUpdate = product.ProductId.Replace("gid://shopify/Product/", "");
+                        var variantIdToUpdate = product.VariantId.Replace("gid://shopify/ProductVariant/", "");
+                        var currentTitle = product.ProductTitle;
+                        var currentPrice = product.Price;
+                        var isMultiVariant = product.ProductType == "MultiVariant";
+
+                        Console.WriteLine($"🔄 Güncelleniyor: {currentTitle} ({product.ProductType}, {product.ProductStatus})");
+
+                        if (isMultiVariant)
+                        {
+                            // Çoklu varyantlı ürün - hem ürün title'ı hem varyant price'ı güncelle
+
+                            // 1. Ürün title'ını güncelle
+                            // var productPayload = new
+                            // {
+                            //     product = new
+                            //     {
+                            //         id = productIdToUpdate,
+                            //         title = newTitle
+                            //     }
+                            // };
+
+                            // var productJsonContent = new StringContent(JsonSerializer.Serialize(productPayload));
+                            // productJsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+                            // var productResponse = await _client.PutAsync($"products/{productIdToUpdate}/variants/{variantIdToUpdate}.json", productJsonContent);
+                            // productResponse.EnsureSuccessStatusCode();
+
+                            // 2. Varyant price'ını güncelle
+                            var variantPayload = new
+                            {
+                                variant = new
+                                {
+                                    id = variantIdToUpdate,
+                                    price = newPrice.ToString("F2"),
+                                }
+                            };
+
+                            var variantJsonContent = new StringContent(JsonSerializer.Serialize(variantPayload));
+                            variantJsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+                            var variantResponse = await _client.PutAsync($"products/{productIdToUpdate}/variants/{variantIdToUpdate}.json", variantJsonContent);
+                            variantResponse.EnsureSuccessStatusCode();
+
+                            Console.WriteLine($"✅ MultiVariant güncellendi: {currentTitle}");
+                            Console.WriteLine($"   Title: '{currentTitle}' -> '{newTitle}'");
+                            Console.WriteLine($"   Price: '{currentPrice}' -> '{newPrice:F2}'");
+
+                            successfulUpdates.Add($"{currentTitle} (MultiVariant-{product.ProductStatus})");
+                        }
+                        else
+                        {
+                            // Tekli varyantlı ürün - hem title hem price güncelle
+                            var payload = new
+                            {
+                                product = new
+                                {
+                                    id = productIdToUpdate,
+                                    title = newTitle,
+                                    variants = new[]
+                                    {
+                                    new
+                                    {
+                                        id = variantIdToUpdate,
+                                        price = newPrice.ToString("F2")
+                                    }
+                                }
+                                }
+                            };
+
+                            var jsonContent = new StringContent(JsonSerializer.Serialize(payload));
+                            jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+                            var response = await _client.PutAsync($"products/{productIdToUpdate}.json", jsonContent);
+                            response.EnsureSuccessStatusCode();
+
+                            Console.WriteLine($"✅ SingleProduct güncellendi: {currentTitle}");
+                            Console.WriteLine($"   Title: '{currentTitle}' -> '{newTitle}'");
+                            Console.WriteLine($"   Price: '{currentPrice}' -> '{newPrice:F2}'");
+
+                            successfulUpdates.Add($"{currentTitle} (SingleProduct-{product.ProductStatus})");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"❌ Ürün güncellenirken hata: {product.ProductTitle} - {ex.Message}");
+                        failedUpdates.Add($"{product.ProductTitle} (HATA: {ex.Message})");
+                    }
+                }
+
+                // Sonuç raporu
+                var statusMessage = $"Toplam {allMatches.Count} ürün - {successfulUpdates.Count} başarılı, {failedUpdates.Count} başarısız";
+
+                if (successfulUpdates.Any())
+                {
+                    Console.WriteLine($"🎯 Başarılı güncellemeler: {string.Join(", ", successfulUpdates)}");
+                }
+
+                if (failedUpdates.Any())
+                {
+                    Console.WriteLine($"⚠️ Başarısız güncellemeler: {string.Join(", ", failedUpdates)}");
+                }
+
+                logEntry = new
+                {
+                    Timestamp = DateTimeOffset.Now,
+                    Sku = sku,
+                    Title = newTitle,
+                    Price = newPrice,
+                    Status = statusMessage,
+                    UpdatedCount = successfulUpdates.Count,
+                    UpdatedProducts = successfulUpdates,
+                    ProcessType = "BackgroundService"
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Genel hata: {ex.Message}");
+            logEntry = new
+            {
+                Timestamp = DateTimeOffset.Now,
+                Sku = sku,
+                Title = newTitle,
+                Price = newPrice,
+                Status = $"Genel hata: {ex.Message}",
+                UpdatedCount = 0,
+                UpdatedProducts = new List<string>(),
+                ProcessType = "BackgroundService"
+            };
+        }
+        // Log dosyasına yaz
+        await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(logEntry, _jsonOptions));
+        Console.WriteLine($"📝 İşlem logu {filePath} dosyasına yazıldı.");
+    }
+
+
+    public async Task<List<ProcessResult>> UpdateProductStatusBySkuListAndSaveRawAsync(List<string> skuList, string filePath)
+    {
+        var logEntries = new List<ProcessResult>();
+
+        foreach (string sku in skuList)
+        {
+            var logEntry = await ProcessSingleSkuAsync(sku);
+            logEntries.Add(logEntry);
+        }
+
+        // Tüm log'ları tek dosyaya yaz
+        var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
+        await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(logEntries, jsonOptions));
+        Console.WriteLine($"Toplam {logEntries.Count} işlem logu {filePath} dosyasına yazıldı.");
+
+        return logEntries;
+    }
+
+    public async Task<ProcessResult> ProcessSingleSkuAsync(string sku)
+    {
+        try
+        {
+            // SKU'ya göre ürün ara
+            var searchResult = await GetProductBySkuWithDuplicateHandlingAsync(sku);
+
+            // Eğer ürün bulunamadıysa
+            if (!searchResult.Found)
+            {
+                Console.WriteLine($"SKU '{sku}' bulunamadı.");
+                return new ProcessResult
+                {
+                    Timestamp = DateTimeOffset.Now,
+                    Sku = sku,
+                    Status = "SKU bulunamadı",
+                    ProcessType = "BackgroundService"
+                };
+            }
+
+            var processResults = new List<ProcessResult>();
+
+            // AllMatches'deki tüm ürünleri işle
+            if (searchResult.AllMatches != null && searchResult.AllMatches.Any())
+            {
+                Console.WriteLine($"SKU '{sku}' için {searchResult.AllMatches.Count} adet eşleşme bulundu, hepsi işlenecek.");
+
+                // Her match'i ayrı ayrı işle
+                foreach (var productInfo in searchResult.AllMatches)
+                {
+                    Console.WriteLine($"İşleniyor: {productInfo.ProductTitle} (ID: {productInfo.ProductId}) - Type: {productInfo.ProductType}");
+
+                    // ID'lerden Shopify prefix'lerini temizle
+                    var cleanProductInfo = new ProductInfo
+                    {
+                        ProductId = productInfo.ProductId?.Replace("gid://shopify/Product/", ""),
+                        ProductTitle = productInfo.ProductTitle,
+                        ProductStatus = productInfo.ProductStatus,
+                        VariantId = productInfo.VariantId?.Replace("gid://shopify/ProductVariant/", ""),
+                        SKU = productInfo.SKU,
+                        Price = productInfo.Price,
+                        InventoryQuantity = productInfo.InventoryQuantity,
+                        CreatedAt = productInfo.CreatedAt,
+                        UpdatedAt = productInfo.UpdatedAt,
+                        TotalVariants = productInfo.TotalVariants,
+                        ProductType = productInfo.ProductType,
+                        SearchMethod = productInfo.SearchMethod
+                    };
+
+                    // ProductType'a göre karar ver
+                    ProcessResult processResult;
+                    if (cleanProductInfo.ProductType != null &&
+                        cleanProductInfo.ProductType.Equals("SingleProduct", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Tekli ürün - archived yap
+                        Console.WriteLine($"SKU '{sku}' tekli ürün olarak tespit edildi (TotalVariants: {cleanProductInfo.TotalVariants}), arşivleniyor...");
+                        processResult = await ArchiveProductAsync(sku, cleanProductInfo);
+                    }
+                    else
+                    {
+                        // Çoklu varyant - varyant silme işlemi  
+                        Console.WriteLine($"SKU '{sku}' çoklu varyant ürün olarak tespit edildi (TotalVariants: {cleanProductInfo.TotalVariants}), varyant siliniyor...");
+                        processResult = await DeleteVariantAsync(sku, cleanProductInfo);
+                    }
+
+                    processResults.Add(processResult);
+                }
+            }
+            else
+            {
+                Console.WriteLine($"SKU '{sku}' için işlenebilir match bulunamadı.");
+                return new ProcessResult
+                {
+                    Timestamp = DateTimeOffset.Now,
+                    Sku = sku,
+                    Status = "İşlenebilir match bulunamadı",
+                    ProcessType = "BackgroundService"
+                };
+            }
+
+            // Eğer birden fazla işlem yapıldıysa, hepsini birleştir
+            if (processResults.Count == 1)
+            {
+                return processResults.First();
+            }
+            else
+            {
+                // Çoklu işlem durumu - özet döndür
+                var successCount = 0;
+                var errorCount = 0;
+                var statuses = new List<string>();
+
+                foreach (var result in processResults)
+                {
+                    statuses.Add(result.Status ?? "Unknown");
+                    if (result.Status != null && (result.Status.Contains("hata") || result.Status.Contains("hatası")))
+                    {
+                        errorCount++;
+                    }
+                    else
+                    {
+                        successCount++;
+                    }
+                }
+
+                return new ProcessResult
+                {
+                    Timestamp = DateTimeOffset.Now,
+                    Sku = sku,
+                    Status = $"Çoklu işlem tamamlandı - Başarılı: {successCount}, Hatalı: {errorCount}",
+                    ProcessType = "BackgroundService",
+                    TotalProcessed = processResults.Count,
+                    DetailedResults = processResults,
+                    StatusSummary = string.Join("; ", statuses)
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SKU '{sku}' işlenirken genel hata oluştu: {ex.Message}");
+            return new ProcessResult
+            {
+                Timestamp = DateTimeOffset.Now,
+                Sku = sku,
+                Status = $"Genel hata: {ex.Message}",
+                ProcessType = "BackgroundService"
+            };
+        }
+    }
+
+    public async Task<ProcessResult> ActiveOrPassif(string sku, decimal isWebshopItem)
+    {
+        try
+        {
+            // SKU'ya göre ürün ara
+            var searchResult = await GetProductBySkuWithDuplicateHandlingAsync(sku);
+
+            // Eğer ürün bulunamadıysa
+            if (!searchResult.Found)
+            {
+                Console.WriteLine($"SKU '{sku}' bulunamadı.");
+                return new ProcessResult
+                {
+                    Timestamp = DateTimeOffset.Now,
+                    Sku = sku,
+                    Status = "SKU bulunamadı",
+                    ProcessType = "BackgroundService"
+                };
+            }
+
+            var processResults = new List<ProcessResult>();
+
+            // AllMatches'deki tüm ürünleri işle
+            if (searchResult.AllMatches != null && searchResult.AllMatches.Any())
+            {
+                Console.WriteLine($"SKU '{sku}' için {searchResult.AllMatches.Count} adet eşleşme bulundu, hepsi işlenecek.");
+
+                // Her match'i ayrı ayrı işle
+                foreach (var productInfo in searchResult.AllMatches)
+                {
+                    Console.WriteLine($"İşleniyor: {productInfo.ProductTitle} (ID: {productInfo.ProductId}) - Type: {productInfo.ProductType}");
+
+                    // ID'lerden Shopify prefix'lerini temizle
+                    var cleanProductInfo = new ProductInfo
+                    {
+                        ProductId = productInfo.ProductId?.Replace("gid://shopify/Product/", ""),
+                        ProductTitle = productInfo.ProductTitle,
+                        ProductStatus = productInfo.ProductStatus,
+                        VariantId = productInfo.VariantId?.Replace("gid://shopify/ProductVariant/", ""),
+                        SKU = productInfo.SKU,
+                        Price = productInfo.Price,
+                        InventoryQuantity = productInfo.InventoryQuantity,
+                        CreatedAt = productInfo.CreatedAt,
+                        UpdatedAt = productInfo.UpdatedAt,
+                        TotalVariants = productInfo.TotalVariants,
+                        ProductType = productInfo.ProductType,
+                        SearchMethod = productInfo.SearchMethod
+                    };
+
+                    ProcessResult processResult;
+                    if (isWebshopItem == 0)
+                    {
+                        // ProductType'a göre karar ver
+
+                        if (cleanProductInfo.ProductType != null &&
+                            cleanProductInfo.ProductType.Equals("SingleProduct", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Tekli ürün - archived yap
+                            Console.WriteLine($"SKU '{sku}' tekli ürün olarak tespit edildi (TotalVariants: {cleanProductInfo.TotalVariants}), arşivleniyor...");
+                            processResult = await ArchiveProductAsync(sku, cleanProductInfo);
+                        }
+                        else
+                        {
+                            // Çoklu varyant - varyant silme işlemi  
+                            Console.WriteLine($"SKU '{sku}' çoklu varyant ürün olarak tespit edildi (TotalVariants: {cleanProductInfo.TotalVariants}), varyant siliniyor...");
+                            processResult = await DeleteVariantAsync(sku, cleanProductInfo);
+                        }
+                    }
+                    else
+                    {
+                        processResult = await ActiveProductAsync(sku, cleanProductInfo);
+                    }
+
+
+
+                    processResults.Add(processResult);
+                }
+            }
+            else
+            {
+                Console.WriteLine($"SKU '{sku}' için işlenebilir match bulunamadı.");
+                return new ProcessResult
+                {
+                    Timestamp = DateTimeOffset.Now,
+                    Sku = sku,
+                    Status = "İşlenebilir match bulunamadı",
+                    ProcessType = "BackgroundService"
+                };
+            }
+
+            // Eğer birden fazla işlem yapıldıysa, hepsini birleştir
+            if (processResults.Count == 1)
+            {
+                return processResults.First();
+            }
+            else
+            {
+                // Çoklu işlem durumu - özet döndür
+                var successCount = 0;
+                var errorCount = 0;
+                var statuses = new List<string>();
+
+                foreach (var result in processResults)
+                {
+                    statuses.Add(result.Status ?? "Unknown");
+                    if (result.Status != null && (result.Status.Contains("hata") || result.Status.Contains("hatası")))
+                    {
+                        errorCount++;
+                    }
+                    else
+                    {
+                        successCount++;
+                    }
+                }
+
+                return new ProcessResult
+                {
+                    Timestamp = DateTimeOffset.Now,
+                    Sku = sku,
+                    Status = $"Çoklu işlem tamamlandı - Başarılı: {successCount}, Hatalı: {errorCount}",
+                    ProcessType = "BackgroundService",
+                    TotalProcessed = processResults.Count,
+                    DetailedResults = processResults,
+                    StatusSummary = string.Join("; ", statuses)
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SKU '{sku}' işlenirken genel hata oluştu: {ex.Message}");
+            return new ProcessResult
+            {
+                Timestamp = DateTimeOffset.Now,
+                Sku = sku,
+                Status = $"Genel hata: {ex.Message}",
+                ProcessType = "BackgroundService"
+            };
+        }
+    }
+
+    private async Task<ProcessResult> DeleteVariantAsync(string sku, ProductInfo productInfo)
+    {
+        try
+        {
+            Console.WriteLine($"Varyant siliniyor - ProductId: {productInfo.ProductId}, VariantId: {productInfo.VariantId}");
+
+            var response = await _client.DeleteAsync($"products/{productInfo.ProductId}/variants/{productInfo.VariantId}.json");
+            response.EnsureSuccessStatusCode();
+
+            Console.WriteLine($"SKU '{sku}' varyantı başarıyla silindi. Ürün ve diğer varyantlar korundu.");
+            return new ProcessResult
+            {
+                Timestamp = DateTimeOffset.Now,
+                Sku = sku,
+                Status = "Varyant silindi",
+                ProcessType = "BackgroundService",
+                ProductId = productInfo.ProductId,
+                VariantId = productInfo.VariantId
+            };
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Varyant silinirken hata oluştu: {ex.Message}");
+            return new ProcessResult
+            {
+                Timestamp = DateTimeOffset.Now,
+                Sku = sku,
+                Status = $"Varyant silme hatası: {ex.Message}",
+                ProcessType = "BackgroundService"
+            };
+        }
+    }
+
+    private async Task<ProcessResult> ArchiveProductAsync(string sku, ProductInfo productInfo)
+    {
+        if (productInfo.ProductStatus != null &&
+            (productInfo.ProductStatus.Equals("active", StringComparison.OrdinalIgnoreCase) ||
+             productInfo.ProductStatus.Equals("actıve", StringComparison.OrdinalIgnoreCase)))
+        {
+            var payload = new
+            {
+                product = new
+                {
+                    id = productInfo.ProductId,
+                    status = "archived"
+                }
+            };
+
+            var jsonContent = new StringContent(JsonSerializer.Serialize(payload));
+            jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+            try
+            {
+                Console.WriteLine($"Ürün arşivleniyor - ProductId: {productInfo.ProductId}");
+
+                var response = await _client.PutAsync($"products/{productInfo.ProductId}.json", jsonContent);
+                response.EnsureSuccessStatusCode();
+
+                Console.WriteLine($"SKU '{sku}' için tekli ürün durumu 'archived' olarak güncellendi.");
+                return new ProcessResult
+                {
+                    Timestamp = DateTimeOffset.Now,
+                    Sku = sku,
+                    Status = "Tekli ürün archived",
+                    ProcessType = "BackgroundService",
+                    ProductId = productInfo.ProductId
+                };
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Ürün archived yaparken hata oluştu: {ex.Message}");
+                return new ProcessResult
+                {
+                    Timestamp = DateTimeOffset.Now,
+                    Sku = sku,
+                    Status = $"Archive hatası: {ex.Message}",
+                    ProcessType = "BackgroundService"
+                };
+            }
+        }
+        else
+        {
+            Console.WriteLine($"SKU '{sku}' için tekli ürün zaten '{productInfo.ProductStatus}' durumunda.");
+            return new ProcessResult
+            {
+                Timestamp = DateTimeOffset.Now,
+                Sku = sku,
+                Status = $"Tekli ürün zaten '{productInfo.ProductStatus}' durumunda",
+                ProcessType = "BackgroundService"
+            };
+        }
+    }
+    public async Task<ProcessResult> ActiveProductAsync(string sku, ProductInfo productInfo)
+    {
+        var payload = new
+        {
+            product = new
+            {
+                id = productInfo.ProductId,
+                status = "active"
+            }
+        };
+
+        var jsonContent = new StringContent(JsonSerializer.Serialize(payload));
+        jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        try
+        {
+            Console.WriteLine($"Ürün arşivleniyor - ProductId: {productInfo.ProductId}");
+
+            var response = await _client.PutAsync($"products/{productInfo.ProductId}.json", jsonContent);
+            response.EnsureSuccessStatusCode();
+
+            Console.WriteLine($"SKU '{sku}' için tekli ürün durumu 'active' olarak güncellendi.");
+            return new ProcessResult
+            {
+                Timestamp = DateTimeOffset.Now,
+                Sku = sku,
+                Status = "Tekli ürün active",
+                ProcessType = "BackgroundService",
+                ProductId = productInfo.ProductId
+            };
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Ürün active yaparken hata oluştu: {ex.Message}");
+            return new ProcessResult
+            {
+                Timestamp = DateTimeOffset.Now,
+                Sku = sku,
+                Status = $"active hatası: {ex.Message}",
+                ProcessType = "BackgroundService"
+            };
+        }
+
+    }
+
+    // ✅ Yeni helper metod ekleyin (class içinde)
+    private async Task AppendToLogFileAsync(string logFilePath, object logData)
+    {
+        var logDirectory = Path.GetDirectoryName(logFilePath);
+        if (!string.IsNullOrEmpty(logDirectory) && !Directory.Exists(logDirectory))
+        {
+            Directory.CreateDirectory(logDirectory);
+        }
+
+        // Mevcut logları oku
+        List<object> allLogs = new List<object>();
+        if (File.Exists(logFilePath))
+        {
+            var existingContent = await File.ReadAllTextAsync(logFilePath);
+            if (!string.IsNullOrEmpty(existingContent))
+            {
+                try
+                {
+                    allLogs = JsonSerializer.Deserialize<List<object>>(existingContent) ?? new List<object>();
+                }
+                catch
+                {
+                    allLogs = new List<object>();
+                }
+            }
+        }
+
+        // Yeni log'u ekle
+        allLogs.Add(logData);
+
+        // Tüm listeyi JSON'a çevir ve kaydet
+        var finalLogJson = JsonSerializer.Serialize(allLogs, _jsonOptions);
+        await File.WriteAllTextAsync(logFilePath, finalLogJson);
+    }
+
+
+    // Helper metodlar
+    private decimal? TryParseWeight(string weightString)
+    {
+        if (string.IsNullOrWhiteSpace(weightString))
+            return null;
+
+        if (decimal.TryParse(weightString, System.Globalization.NumberStyles.Any,
+            System.Globalization.CultureInfo.InvariantCulture, out decimal weight))
+        {
+            return weight;
+        }
+
+        return null;
+    }
+
+    private bool ParseTaxable(string isTaxableItem)
+    {
+        if (string.IsNullOrWhiteSpace(isTaxableItem))
+            return true; // Varsayılan olarak vergiye tabi
+
+        // "1", "true", "yes" gibi değerleri kontrol et
+        return isTaxableItem == "1" ||
+               isTaxableItem.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+               isTaxableItem.Equals("yes", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Helper class
+    public class ProductInfo
+    {
+        public string ProductId { get; set; }
+        public string ProductTitle { get; set; }
+        public string ProductStatus { get; set; }
+        public string VariantId { get; set; }
+        public string SKU { get; set; }
+        public string Price { get; set; }
+        public int InventoryQuantity { get; set; }
+        public string CreatedAt { get; set; }
+        public string UpdatedAt { get; set; }
+        public int TotalVariants { get; set; }
+        public string ProductType { get; set; }
+        public string SearchMethod { get; set; }
+    }
+
+    public class ProductSearchResult
+    {
+        public bool Found { get; set; }
+        public string SKU { get; set; }
+        public ProductInfo Match { get; set; }
+        public List<ProductInfo> AllMatches { get; set; } = new List<ProductInfo>();
+        public int DuplicateCount { get; set; }
+        public string Selection { get; set; }
+        public string SelectionReason { get; set; }
+        public string Reason { get; set; }
+        public string Error { get; set; }
+    }
+
+    public class ProcessResult
+    {
+        public DateTimeOffset Timestamp { get; set; }
+        public string Sku { get; set; }
+        public string Status { get; set; }
+        public string ProcessType { get; set; }
+        public string ProductId { get; set; }
+        public string VariantId { get; set; }
+        public int TotalProcessed { get; set; }
+        public List<ProcessResult> DetailedResults { get; set; }
+        public string StatusSummary { get; set; }
+    }
+}

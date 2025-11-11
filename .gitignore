@@ -1,0 +1,42 @@
+# .NET ve C# dosyaları
+bin/
+obj/
+*.user
+*.suo
+*.csproj
+*.vs/
+Data/
+.gitignore/
+
+# Visual Studio Code
+.vscode/
+
+# JetBrains Rider
+.idea/
+
+# Kişisel veya gizli konfigürasyon dosyaları
+appsettings*.json
+.env
+secrets.json
+oldprogram.txt
+
+
+# Node.js / frontend dosyaları (varsa)
+node_modules/
+dist/
+build/
+
+# Log dosyaları
+*.log
+
+# Database / SQLite dosyaları
+*.db
+*.sqlite
+
+# Migration klasörü
+Migrations/
+
+# Paket yöneticisi
+*.nupkg
+*.snupkg
+inactiveproduct.json

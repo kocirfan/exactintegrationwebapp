@@ -1,0 +1,405 @@
+ public async Task UpdateProductStatusBySkuAndSaveRawAsync(string sku, string filePath)
+    {
+        var rawProductsDoc = await GetAllProductsRawAsync();
+        bool productFound = false;
+        string productIdToUpdate = null;
+        string currentStatus = null;
+        bool isVariant = false;
+        string variantIdToDelete = null;
+        int variantCount = 0;
+
+        var logEntry = new
+        {
+            Timestamp = DateTimeOffset.Now,
+            Sku = sku,
+            Status = "",
+            ProcessType = "BackgroundService"
+        };
+
+        // SKU'yu ara ve ürün tipini belirle
+        if (rawProductsDoc.RootElement.TryGetProperty("products", out var products))
+        {
+            foreach (var product in products.EnumerateArray())
+            {
+                if (product.TryGetProperty("variants", out var variants))
+                {
+                    variantCount = variants.GetArrayLength();
+
+                    foreach (var variant in variants.EnumerateArray())
+                    {
+                        if (variant.TryGetProperty("sku", out var skuElement) &&
+                            skuElement.GetString() == sku)
+                        {
+                            productFound = true;
+                            if (product.TryGetProperty("id", out var idElement))
+                            {
+                                productIdToUpdate = idElement.ToString();
+                            }
+                            if (product.TryGetProperty("status", out var statusElement))
+                            {
+                                currentStatus = statusElement.GetString();
+                            }
+                            if (variant.TryGetProperty("id", out var variantIdElement))
+                            {
+                                variantIdToDelete = variantIdElement.ToString();
+                            }
+
+                            // Eğer birden fazla varyant varsa, bu bir varyant silme işlemi
+                            isVariant = variantCount > 1;
+                            break;
+                        }
+                    }
+                    if (productFound) break;
+                }
+            }
+        }
+
+        if (!productFound)
+        {
+            Console.WriteLine($"SKU '{sku}' bulunamadı.");
+            logEntry = new
+            {
+                Timestamp = DateTimeOffset.Now,
+                Sku = sku,
+                Status = "SKU bulunamadı",
+                ProcessType = "BackgroundService"
+            };
+        }
+        else
+        {
+            if (isVariant)
+            {
+                // Güvenlik kontrolü: En az 2 varyant olmalı
+                if (variantCount < 2)
+                {
+                    Console.WriteLine($"Güvenlik hatası: Üründe sadece {variantCount} varyant var, varyant silinmeyecek.");
+                    logEntry = new
+                    {
+                        Timestamp = DateTimeOffset.Now,
+                        Sku = sku,
+                        Status = "Güvenlik hatası - tek varyant silinemez",
+                        ProcessType = "BackgroundService"
+                    };
+                    return;
+                }
+
+                // Varyant silme işlemi (sadece varyantı siler, ürünü değil)
+                try
+                {
+                    var response = await _client.DeleteAsync($"products/{productIdToUpdate}/variants/{variantIdToDelete}.json");
+                    response.EnsureSuccessStatusCode();
+
+                    Console.WriteLine($"SKU '{sku}' varyantı başarıyla silindi. Ürün ve diğer varyantlar korundu.");
+                    logEntry = new
+                    {
+                        Timestamp = DateTimeOffset.Now,
+                        Sku = sku,
+                        Status = "Varyant silindi",
+                        ProcessType = "BackgroundService"
+                    };
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Varyant silinirken hata oluştu: {ex.Message}");
+                    logEntry = new
+                    {
+                        Timestamp = DateTimeOffset.Now,
+                        Sku = sku,
+                        Status = $"Varyant silme hatası: {ex.Message}",
+                        ProcessType = "BackgroundService"
+                    };
+                }
+            }
+            else
+            {
+                // Tekli ürün - archived yap
+                if (currentStatus != null && currentStatus.Equals("active", StringComparison.OrdinalIgnoreCase))
+                {
+                    var payload = new
+                    {
+                        product = new
+                        {
+                            id = productIdToUpdate,
+                            status = "archived"
+                        }
+                    };
+
+                    var jsonContent = new StringContent(JsonSerializer.Serialize(payload));
+                    jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+                    try
+                    {
+                        var response = await _client.PutAsync($"products/{productIdToUpdate}.json", jsonContent);
+                        response.EnsureSuccessStatusCode();
+
+                        Console.WriteLine($"SKU '{sku}' için tekli ürün durumu 'archived' olarak güncellendi.");
+                        logEntry = new
+                        {
+                            Timestamp = DateTimeOffset.Now,
+                            Sku = sku,
+                            Status = "Tekli ürün archived",
+                            ProcessType = "BackgroundService"
+                        };
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Ürün archived yaparken hata oluştu: {ex.Message}");
+                        logEntry = new
+                        {
+                            Timestamp = DateTimeOffset.Now,
+                            Sku = sku,
+                            Status = $"Archive hatası: {ex.Message}",
+                            ProcessType = "BackgroundService"
+                        };
+                    }
+                }
+                else
+                {
+                    logEntry = new
+                    {
+                        Timestamp = DateTimeOffset.Now,
+                        Sku = sku,
+                        Status = $"Tekli ürün zaten '{currentStatus}' durumunda",
+                        ProcessType = "BackgroundService"
+                    };
+                    Console.WriteLine($"SKU '{sku}' için tekli ürün zaten '{currentStatus}' durumunda.");
+                }
+            }
+        }
+
+        // Log dosyasına yaz
+        await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(logEntry, _jsonOptions));
+        Console.WriteLine($"İşlem logu {filePath} dosyasına yazıldı.");
+
+        rawProductsDoc.Dispose();
+    }
+
+
+
+    // public async Task<JsonDocument> GetAllProductsRawAsync()
+    // {
+    //     var allProductsJson = new List<JsonElement>();
+    //     string endpoint = "products.json?limit=250"; // Shopify limiti genelde 250'dir
+
+    //     while (!string.IsNullOrEmpty(endpoint))
+    //     {
+    //         var response = await _client.GetAsync(endpoint);
+    //         response.EnsureSuccessStatusCode();
+
+    //         string jsonResponse = await response.Content.ReadAsStringAsync();
+    //         using var document = JsonDocument.Parse(jsonResponse);
+
+    //         if (document.RootElement.TryGetProperty("products", out var products))
+    //         {
+    //             foreach (var product in products.EnumerateArray())
+    //             {
+    //                 allProductsJson.Add(product.Clone());
+    //             }
+    //         }
+
+    //         // Pagination
+    //         endpoint = null;
+    //         if (response.Headers.TryGetValues("Link", out var values))
+    //         {
+    //             string linkHeader = values.FirstOrDefault() ?? "";
+    //             if (linkHeader.Contains("rel=\"next\""))
+    //             {
+    //                 var parts = linkHeader.Split(',');
+    //                 var nextLink = parts.FirstOrDefault(p => p.Contains("rel=\"next\""));
+    //                 if (nextLink != null)
+    //                 {
+    //                     var start = nextLink.IndexOf('<') + 1;
+    //                     var end = nextLink.IndexOf('>') - start;
+    //                     var nextUrl = nextLink.Substring(start, end);
+    //                     endpoint = nextUrl.Replace($"{_shopifyStoreUrl}/admin/api/2025-01/", "");
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    //     // Tüm ürünleri tek bir JSON'da birleştir
+    //     var finalJson = new { products = allProductsJson };
+    //     string finalJsonString = JsonSerializer.Serialize(finalJson, _jsonOptions);
+
+    //     return JsonDocument.Parse(finalJsonString);
+    // }
+
+    // using System.Net.Http.Headers;
+// using System.Text.Json;
+// using ShopifyProductApp.Models;
+
+// namespace ShopifyProductApp.Services;
+
+// public class ShopifyService
+// {
+//     private readonly HttpClient _client;
+//     private readonly JsonSerializerOptions _jsonOptions;
+//     private readonly string _shopifyStoreUrl;
+
+//     public ShopifyService(string shopifyStoreUrl, string accessToken)
+//     {
+//         _shopifyStoreUrl = shopifyStoreUrl.TrimEnd('/');
+//         _client = new HttpClient
+//         {
+//             BaseAddress = new Uri($"{_shopifyStoreUrl}/admin/api/2025-01/")
+//         };
+//         _client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+//         _client.DefaultRequestHeaders.Add("X-Shopify-Access-Token", accessToken);
+
+//         _jsonOptions = new JsonSerializerOptions
+//         {
+//             PropertyNameCaseInsensitive = true,
+//             WriteIndented = true
+//         };
+//     }
+
+//     public async Task<List<Product>> GetAllProductsAsync()
+//     {
+//         var allProducts = new List<Product>();
+//         string endpoint = "products.json?limit=3000";
+
+//         while (!string.IsNullOrEmpty(endpoint))
+//         {
+//             var response = await _client.GetAsync(endpoint);
+//             response.EnsureSuccessStatusCode();
+
+//             string jsonResponse = await response.Content.ReadAsStringAsync();
+//             var productData = JsonSerializer.Deserialize<ShopifyProductResponse>(jsonResponse, _jsonOptions);
+
+//             if (productData?.Products != null && productData.Products.Any())
+//             {
+//                 allProducts.AddRange(productData.Products);
+//             }
+
+//             // Pagination
+//             if (response.Headers.TryGetValues("Link", out var values))
+//             {
+//                 string linkHeader = values.FirstOrDefault() ?? "";
+//                 if (linkHeader.Contains("rel=\"next\""))
+//                 {
+//                     var parts = linkHeader.Split(',');
+//                     var nextLink = parts.FirstOrDefault(p => p.Contains("rel=\"next\""));
+//                     if (nextLink != null)
+//                     {
+//                         var start = nextLink.IndexOf('<') + 1;
+//                         var end = nextLink.IndexOf('>') - start;
+//                         var nextUrl = nextLink.Substring(start, end);
+//                         endpoint = nextUrl.Replace($"{_shopifyStoreUrl}/admin/api/2025-01/", "");
+//                     }
+//                     else
+//                     {
+//                         endpoint = null;
+//                     }
+//                 }
+//                 else
+//                 {
+//                     endpoint = null;
+//                 }
+//             }
+//             else
+//             {
+//                 endpoint = null;
+//             }
+//         }
+
+//         return allProducts;
+//     }
+
+//     public async Task SaveProductsToFileAsync(string filePath)
+//     {
+//         var products = await GetAllProductsAsync();
+
+//         Console.WriteLine($"Toplam ürün: {products.Count}");
+
+//         await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(products, _jsonOptions));
+
+//         Console.WriteLine($"Ürünler {filePath} dosyasına kaydedildi.");
+//     }
+
+//     // Yeni metod: SKU’ya göre Status güncelle ve JSON’a yaz
+//     public async Task UpdateProductStatusBySkuAndSaveAsync(string sku, string filePath)
+//     {
+//         var products = await GetAllProductsAsync();
+
+//         var productToUpdate = products.FirstOrDefault(p => p.Variants.Any(v => v.Sku == sku));
+
+//         if (productToUpdate == null)
+//         {
+//             Console.WriteLine($"SKU '{sku}' bulunamadı.");
+//         }
+//         else
+//         {
+//             if (productToUpdate.Status.Equals("active", StringComparison.OrdinalIgnoreCase))
+//             {
+//                 productToUpdate.Status = "archived";
+
+//                 var payload = new
+//                 {
+//                     product = new
+//                     {
+//                         id = productToUpdate.Id,
+//                         status = productToUpdate.Status
+//                     }
+//                 };
+
+//                 var jsonContent = new StringContent(JsonSerializer.Serialize(payload));
+//                 jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+//                 var response = await _client.PutAsync($"products/{productToUpdate.Id}.json", jsonContent);
+//                 response.EnsureSuccessStatusCode();
+
+//                 Console.WriteLine($"SKU '{sku}' için ürün durumu 'archived' olarak güncellendi.");
+//             }
+//             else
+//             {
+//                 Console.WriteLine($"SKU '{sku}' için ürün zaten '{productToUpdate.Status}' durumunda.");
+//             }
+//         }
+
+//         // Güncellenmiş ürünleri JSON’a yaz
+//         await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(products, _jsonOptions));
+//         Console.WriteLine($"Güncellenmiş ürünler {filePath} dosyasına yazıldı.");
+//     }
+// }
+
+
+//SON// https://exactentegrasyon.mazakayazilim.com/callback,https://exactentegrasyon.mazakayazilim.com/callback
+
+// {
+//   "access_token": "stampNL001.gAAAACZW-EY55v24ejK44JbxGmaeFOduGma7QDa3IQ5Jwb8YWB50kU_hGscZ8YsHBfpp9gTQq3T-7vG39fDiwPbi7vFOC4Ero86S55EYEVmzAgk0GXFjAnmqcijlZTLUBKvKQVYYLZlfT8s4mFgVjW5aPhJdBYXkWTzVmA87e2qUQcjhlAIAAIAAAAClPLi_xmQHC0YhY5MRoogP5snrBpSIX6offxfAJjf4X2lhxSydigItkHMu6Rp8gM26jR2mIrrMZmy3S2UwGiIO1xIJzfnj9K2jk1fmaswxystNvcFyT04LBBV1u8IgR_BA1WSf_CpVXuiP6exXLr3T8YUwf6Aj7Qbd7eEVg4XdhN-Y2Kd0hO4UL1Y3oiGWi3PomCGSCuhTN6nmhk3BLh9bv_cVUvt_2iQh3TvwJyNcwZltacFKJ_OHqEgL_cbrxGLhffFYRScp9mYkCC8hg8GidBGe03WQxPGrJTDQOlymcTQNcAr84JwvpFHTU24wfyBGUO4kE7M9vmMw2-uoUk3_XonvogpF0iKGT26DgEA1pDCv5uRU9co-A3MdEnacK5foYvrhQlA7AW5sz--J_wwQg3EVTN0MPvJda0HFtjk3JlBd9wNx_MXumY1Ig06R8HKqDps1gKkGWNSQN6PZBG46ByIpq-t38MioGGO1glHJJJG2OQFTjGKyBlxMbZcCu7Xx5WrqUFv25l86PyaSpBXkCG-zIzKtsQ-4RYdehqOI7AhFpDYs8vEoHbCiU081sVbE0Sg_eGXvMJRf4JujiPyoajJriEg8uqc-Tem0Ue0bokD-NRuyvgvC7vZVF8E7z6ziQI29XlGT0rVyRDZfEcL4b92j96nJ4AH5zmQV04fs4I1vBsFHW5Z-Lb8ivbGicoh4XqNO1RRDDh1dTcYuO6fEQeiUO7HnrMAuKiuyMYpRMn_EX71VCMCQQT54KiwGeBEXjcJfdTeajkqA66LFsg2mzjY13Rl_Qls1W84dEsO4M2t1c_Fvx-mUcHRqY8zSkm0FglxkNfnBoyb8x4JBsKfQhw1Zk-r-OBpH5ZNQkAiB2g",
+//   "refresh_token": "stampNL001.eH_C!IAAAAFbN0VQKTbo9zDaKSIsXq6WVijnki5uv1eE_5aU-wQgYMQIAAAFuw_8k2vruc9FTcMZIX1rDdgg-ZqRpstHqBUSbWZb6KVRe-kuZaOpyI1RjxEcFpm3rANGmJKlfzn5eWQBx_Qn3l7sBPA6wVyTb59d8GjrVPqO4tHfY3CO5Dis-LIvaJWVaUPl6xoq0LJReZW_3FPD2c7m2aXrxCVP96KMEc-kU6DExek33a6J9SX2H6fuWrJVe6ILLJgkSoKiJfyCSZvzhTCMUovXp04MXub3vx4ZQnn8BeeX8CI6fEzy_FPtjCYXpoi2Imx2H2xSUfSeKoU0E1j5_iUJQKa3JsJ-QAkVEdZuk6UeTlZedCb6M0rhe8a953vYe-9Nrp-ldBU5iT_BvjddXiIalRggBzYp3AHaEADlgRZZYBF_rYXskzpslObbJ6yqPcKz6gfp3lXbju7m2N5QbZORn9DNLVzBUN-IEhTUGUcu2yW74zCCIH4A77wcACQ7cSWtUI0c9XSwOP12hFUwCkyhDyz-KYxEr4F43NVBYJy-tB2zi469m_ewQsc78AYTRF8OSSb9rrAi9D7PTHiF94uVTDnDdXyi_MX5LT9QIHY15ZsMfvJr9ErOznrLeetfBkZr5o0ohNAgErV1POc3zm77PnA71HLx6HcBZ5uBvdWdUI1y3wOYocH94V6_NqZjeBWM7YFHXQPBpexbJqpTSFGCsCgPsv0pMj9CkYJxz5q7WuSnxSLSec3GqBV2KqJ5pXq_sIBETiAESY_w1DethkVecd4uiVLXsDaT-Hg",
+//   "token_type": "bearer",
+//   "expires_in": 600,
+//   "ExpiryTime": "2025-09-25T13:42:28.1829798Z"
+// }
+
+builder.Services.AddSingleton<ExactService>(provider =>
+{
+    var config = provider.GetRequiredService<IConfiguration>();
+    var settingsService = provider.GetRequiredService<SettingsService>();
+    
+    return new ExactService(
+        config["ExactOnline:ClientId"],
+        config["ExactOnline:ClientSecret"], 
+        config["ExactOnline:RedirectUri"],
+        config["ExactOnline:BaseUrl"],
+        config["ExactOnline:Division"],
+        config["ExactOnline:TokenFile"],
+        settingsService
+    );
+});
+📋 appsettings.json Ayarları:
+json{
+  "ExactOnline": {
+    "ClientId": "your-client-id",
+    "ClientSecret": "your-client-secret",
+    "RedirectUri": "your-redirect-uri", 
+    "BaseUrl": "https://start.exactonline.nl",
+    "Division": "123456",
+    "TokenFile": "exact_token.json",
+    "DefaultWarehouse": "12345678-1234-1234-1234-123456789012",
+    "DefaultCurrency": "TRY",
+    "DefaultOrderStatus": "12",
+    "DefaultVATCode": "1"
+  }
+}
