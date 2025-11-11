@@ -3042,96 +3042,199 @@ public class ExactService
     //         return new List<ExactOrderDetail>();
     //     }
     // }
+    //     public async Task<List<ExactOrderDetail>> GetOrdersByCustomerGuid(Guid customerGuid, int top = 100, int skip = 0)
+    // {
+    //     var token = await GetValidToken();
+    //     if (token == null)
+    //     {
+    //         Console.WriteLine("❌ Token alınamadı");
+    //         return new List<ExactOrderDetail>();
+    //     }
+
+    //     using var client = new HttpClient();
+    //     client.DefaultRequestHeaders.Authorization =
+    //         new AuthenticationHeaderValue("Bearer", token.access_token);
+    //     client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+    //     try
+    //     {
+    //         // Bir yıl önceki tarihi hesapla
+    //         var oneYearAgo = DateTime.UtcNow.AddYears(-1).ToString("yyyy-MM-ddTHH:mm:ss");
+
+    //         var url = $"{_baseUrl}/api/v1/{_divisionCode}/salesorder/SalesOrders" +
+    //                   $"?$filter=OrderedBy eq guid'{customerGuid}' and OrderDate ge datetime'{oneYearAgo}'" +
+    //                   $"&$orderby=OrderDate desc" +
+    //                   $"&$top={top}" +
+    //                   $"&$skip={skip}";
+
+    //         Console.WriteLine($"🔍 Sipariş URL: {url}");
+    //         Console.WriteLine($"📅 Filtreleme tarihi: {oneYearAgo}");
+
+    //         var searchResponse = await client.GetAsync(url);
+
+    //         if (!searchResponse.IsSuccessStatusCode)
+    //         {
+    //             var errorContent = await searchResponse.Content.ReadAsStringAsync();
+    //             Console.WriteLine($"❌ API Hatası ({searchResponse.StatusCode}): {errorContent}");
+    //             _logger.LogError($"ExactOnline API Hatası: {searchResponse.StatusCode} - {errorContent}");
+    //             return new List<ExactOrderDetail>();
+    //         }
+
+    //         var searchContent = await searchResponse.Content.ReadAsStringAsync();
+    //         Console.WriteLine($"📝 API Response: {searchContent.Substring(0, Math.Min(500, searchContent.Length))}...");
+
+    //         using var searchDoc = JsonDocument.Parse(searchContent);
+
+    //         var dataElement = searchDoc.RootElement.GetProperty("d");
+    //         JsonElement resultsElement = dataElement.ValueKind == JsonValueKind.Object &&
+    //                                      dataElement.TryGetProperty("results", out var res)
+    //             ? res
+    //             : dataElement;
+
+    //             var orderDetails = new List<ExactOrderDetail>();
+
+
+    //         if (resultsElement.ValueKind == JsonValueKind.Array)
+    //         {
+    //             foreach (var orderElement in resultsElement.EnumerateArray())
+    //             {
+    //                 try
+    //                 {
+    //                     var orderId = orderElement.GetProperty("OrderID").GetGuid();
+
+    //                     Console.WriteLine($"🔄 Sipariş detayı çekiliyor: {orderId}");
+
+    //                     // Her sipariş için detaylı bilgi çek
+    //                     var orderDetail = await GetOrderDetailByOrderId(orderId);
+
+    //                     if (orderDetail != null)
+    //                     {
+    //                         orderDetails.Add(orderDetail);
+    //                     }
+    //                 }
+    //                 catch (Exception ex)
+    //                 {
+    //                     Console.WriteLine($"⚠️ Sipariş parse hatası: {ex.Message}");
+    //                     _logger.LogWarning($"Sipariş parse hatası: {ex.Message}");
+    //                     continue;
+    //                 }
+    //             }
+    //         }
+
+    //         Console.WriteLine($"✅ {orderDetails.Count} sipariş detayı bulundu (son 1 yıl)");
+    //         _logger.LogInformation($"Müşteri {customerGuid} için {orderDetails.Count} sipariş detayı bulundu (son 1 yıl)");
+
+    //         return orderDetails;
+    //     }
+    //     catch (Exception ex)
+    //     {
+    //         Console.WriteLine($"❌ ExactOnline sipariş çekme hatası: {ex.Message}");
+    //         _logger.LogError(ex, $"Sipariş çekme hatası - CustomerGuid: {customerGuid}");
+    //         return new List<ExactOrderDetail>();
+    //     }
+    // }
     public async Task<List<ExactOrderDetail>> GetOrdersByCustomerGuid(Guid customerGuid, int top = 100, int skip = 0)
-{
-    var token = await GetValidToken();
-    if (token == null)
     {
-        Console.WriteLine("❌ Token alınamadı");
-        return new List<ExactOrderDetail>();
-    }
-
-    using var client = new HttpClient();
-    client.DefaultRequestHeaders.Authorization =
-        new AuthenticationHeaderValue("Bearer", token.access_token);
-    client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-    try
-    {
-        // Bir yıl önceki tarihi hesapla
-        var oneYearAgo = DateTime.UtcNow.AddYears(-1).ToString("yyyy-MM-ddTHH:mm:ss");
-        
-        var url = $"{_baseUrl}/api/v1/{_divisionCode}/salesorder/SalesOrders" +
-                  $"?$filter=OrderedBy eq guid'{customerGuid}' and OrderDate ge datetime'{oneYearAgo}'" +
-                  $"&$orderby=OrderDate desc" +
-                  $"&$top={top}" +
-                  $"&$skip={skip}";
-
-        Console.WriteLine($"🔍 Sipariş URL: {url}");
-        Console.WriteLine($"📅 Filtreleme tarihi: {oneYearAgo}");
-
-        var searchResponse = await client.GetAsync(url);
-
-        if (!searchResponse.IsSuccessStatusCode)
+        var token = await GetValidToken();
+        if (token == null)
         {
-            var errorContent = await searchResponse.Content.ReadAsStringAsync();
-            Console.WriteLine($"❌ API Hatası ({searchResponse.StatusCode}): {errorContent}");
-            _logger.LogError($"ExactOnline API Hatası: {searchResponse.StatusCode} - {errorContent}");
+            Console.WriteLine("❌ Token alınamadı");
             return new List<ExactOrderDetail>();
         }
 
-        var searchContent = await searchResponse.Content.ReadAsStringAsync();
-        Console.WriteLine($"📝 API Response: {searchContent.Substring(0, Math.Min(500, searchContent.Length))}...");
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-        using var searchDoc = JsonDocument.Parse(searchContent);
-
-        var dataElement = searchDoc.RootElement.GetProperty("d");
-        JsonElement resultsElement = dataElement.ValueKind == JsonValueKind.Object &&
-                                     dataElement.TryGetProperty("results", out var res)
-            ? res
-            : dataElement;
-
-        var orderDetails = new List<ExactOrderDetail>();
-
-        if (resultsElement.ValueKind == JsonValueKind.Array)
+        try
         {
-            foreach (var orderElement in resultsElement.EnumerateArray())
+            // Bir yıl önceki tarihi hesapla
+            var oneYearAgo = DateTime.UtcNow.AddYears(-1).ToString("yyyy-MM-ddTHH:mm:ss");
+
+            var url = $"{_baseUrl}/api/v1/{_divisionCode}/salesorder/SalesOrders" +
+                      $"?$filter=OrderedBy eq guid'{customerGuid}' and OrderDate ge datetime'{oneYearAgo}'" +
+                      $"&$orderby=OrderDate desc" +
+                      $"&$top={top}" +
+                      $"&$skip={skip}";
+
+            Console.WriteLine($"🔍 Sipariş URL: {url}");
+            Console.WriteLine($"📅 Filtreleme tarihi: {oneYearAgo}");
+
+            var searchResponse = await client.GetAsync(url);
+
+            if (!searchResponse.IsSuccessStatusCode)
             {
-                try
+                var errorContent = await searchResponse.Content.ReadAsStringAsync();
+                Console.WriteLine($"❌ API Hatası ({searchResponse.StatusCode}): {errorContent}");
+                _logger.LogError($"ExactOnline API Hatası: {searchResponse.StatusCode} - {errorContent}");
+                return new List<ExactOrderDetail>();
+            }
+
+            var searchContent = await searchResponse.Content.ReadAsStringAsync();
+            Console.WriteLine($"📝 API Response: {searchContent.Substring(0, Math.Min(500, searchContent.Length))}...");
+
+            using var searchDoc = JsonDocument.Parse(searchContent);
+
+            var dataElement = searchDoc.RootElement.GetProperty("d");
+            JsonElement resultsElement = dataElement.ValueKind == JsonValueKind.Object &&
+                                         dataElement.TryGetProperty("results", out var res)
+                ? res
+                : dataElement;
+
+            var orderDetails = new List<ExactOrderDetail>();
+
+            if (resultsElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var orderElement in resultsElement.EnumerateArray())
                 {
-                    var orderId = orderElement.GetProperty("OrderID").GetGuid();
-
-                    Console.WriteLine($"🔄 Sipariş detayı çekiliyor: {orderId}");
-
-                    // Her sipariş için detaylı bilgi çek
-                    var orderDetail = await GetOrderDetailByOrderId(orderId);
-
-                    if (orderDetail != null)
+                    try
                     {
+                        var orderDetail = new ExactOrderDetail
+                        {
+                            OrderID = orderElement.GetProperty("OrderID").GetGuid(),
+                            OrderNumber = orderElement.TryGetProperty("OrderNumber", out var orderNum)
+                                ? orderNum.GetInt32()
+                                : 0,
+                            OrderDate = ParseExactDate(orderElement, "OrderDate"),
+                            AmountDC = orderElement.TryGetProperty("AmountDC", out var amountDC)
+                        ? amountDC.GetDecimal()
+                        : 0,
+                            AmountFC = orderElement.TryGetProperty("AmountFC", out var amountFC)
+                        ? amountFC.GetDecimal()
+                        : 0,
+                            AmountDiscount = orderElement.TryGetProperty("AmountDiscount", out var discount)
+                        ? discount.GetDecimal()
+                        : 0,
+                            Status = orderElement.TryGetProperty("Status", out var status)
+                        ? status.GetInt32()
+                        : 0,
+
+                        };
+
                         orderDetails.Add(orderDetail);
                     }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"⚠️ Sipariş parse hatası: {ex.Message}");
-                    _logger.LogWarning($"Sipariş parse hatası: {ex.Message}");
-                    continue;
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"⚠️ Sipariş parse hatası: {ex.Message}");
+                        _logger.LogWarning($"Sipariş parse hatası: {ex.Message}");
+                        continue;
+                    }
                 }
             }
+
+            Console.WriteLine($"✅ {orderDetails.Count} sipariş bulundu (son 1 yıl)");
+            _logger.LogInformation($"Müşteri {customerGuid} için {orderDetails.Count} sipariş bulundu (son 1 yıl)");
+
+            return orderDetails;
         }
-
-        Console.WriteLine($"✅ {orderDetails.Count} sipariş detayı bulundu (son 1 yıl)");
-        _logger.LogInformation($"Müşteri {customerGuid} için {orderDetails.Count} sipariş detayı bulundu (son 1 yıl)");
-
-        return orderDetails;
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ ExactOnline sipariş çekme hatası: {ex.Message}");
+            _logger.LogError(ex, $"Sipariş çekme hatası - CustomerGuid: {customerGuid}");
+            return new List<ExactOrderDetail>();
+        }
     }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"❌ ExactOnline sipariş çekme hatası: {ex.Message}");
-        _logger.LogError(ex, $"Sipariş çekme hatası - CustomerGuid: {customerGuid}");
-        return new List<ExactOrderDetail>();
-    }
-}
 
     public async Task<ExactOrderDetail> GetOrderDetailByOrderId(Guid orderId)
     {
