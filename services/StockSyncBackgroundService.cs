@@ -186,7 +186,7 @@ namespace ShopifyProductApp.Services
 
         private DateTime GetNextRunTime(DateTime currentTime)
         {
-            var today0930 = new DateTime(currentTime.Year, currentTime.Month, currentTime.Day, 01, 30, 0);
+            var today0930 = new DateTime(currentTime.Year, currentTime.Month, currentTime.Day, 01, 55, 0);
             return currentTime < today0930 ? today0930 : today0930.AddDays(1);
         }
 
