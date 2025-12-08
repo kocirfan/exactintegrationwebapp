@@ -42,7 +42,8 @@ namespace ShopifyProductApp.Services
                     {
                         var exactService = scope.ServiceProvider.GetRequiredService<ExactService>();
                         var shopifyService = scope.ServiceProvider.GetRequiredService<ShopifyService>();
-                        var settingsService = scope.ServiceProvider.GetRequiredService<SettingsService>();
+                        // var settingsService = scope.ServiceProvider.GetRequiredService<SettingsService>();
+                         var settingsService = scope.ServiceProvider.GetRequiredService<ISettingsService>();
 
                         // Token kontrolü - ExactService içinden
                         var tokenResponse = await exactService.GetValidToken();
@@ -63,11 +64,11 @@ namespace ShopifyProductApp.Services
                     _logger.LogError(ex, "❌ Product sync service hatası: {Error}", ex.Message);
                 }
 
-                await Task.Delay(TimeSpan.FromMinutes(11), stoppingToken);
+                await Task.Delay(TimeSpan.FromMinutes(140), stoppingToken);
             }
         }
 
-        private async Task PerformSyncOperations(ExactService exactService, ShopifyService shopifyService, SettingsService settingsService)
+        private async Task PerformSyncOperations(ExactService exactService, ShopifyService shopifyService, ISettingsService settingsService)
         {
             try
             {
@@ -141,6 +142,10 @@ namespace ShopifyProductApp.Services
 
                                 _logger.LogDebug("🔄 Güncelleniyor: SKU={Sku}, Title={Title}, Price={Price}",
                                     sku, title, price);
+                                    if(sku == "CHS1051007016")
+                                {
+                                    Console.WriteLine("BURADA.");
+                                }
 
                                 // Shopify'da ürünü güncelle
                                 await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(

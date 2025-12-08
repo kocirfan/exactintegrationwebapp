@@ -1,450 +1,5 @@
-// using Microsoft.Extensions.DependencyInjection;
-// using Microsoft.Extensions.Hosting;
-// using ShopifyProductApp.Services;
-// using System;
-// using System.Collections.Generic;
-// using System.IO;
-// using System.Linq;
-// using System.Text.Json;
-// using System.Threading;
-// using System.Threading.Tasks;
 
-// namespace ShopifyProductApp.Services
-// {
-//     public class NewProductCreationService : BackgroundService
-//     {
-//         private readonly IServiceProvider _serviceProvider;
-//         // private readonly ITokenManager _tokenManager;
-//         private readonly ILogger<NewProductCreationService> _logger;
-//         private readonly string _newProductLogFilePath = "Data/Logs/new_product_creation.json";
-//         private readonly string _newProductArchiveFilePath = "Data/newproducts.json";
-//         private readonly TimeSpan _checkInterval = TimeSpan.FromMinutes(10); // Her 30 dakikada bir
-
-//         public NewProductCreationService(
-//             IServiceProvider serviceProvider,
-//             ILogger<NewProductCreationService> logger)
-//         {
-//             _serviceProvider = serviceProvider;
-//             _logger = logger;
-//         }
-
-//         // protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-//         // {
-//         //     _logger.LogInformation("🆕 New Product Creation Service başlatıldı - Her 30 dakikada bir çalışacak");
-
-//         //     while (!stoppingToken.IsCancellationRequested)
-//         //     {
-//         //         try
-//         //         {
-//         //             var now = DateTime.Now;
-
-//         //             _logger.LogInformation("⏰ Sonraki çalışma: {NextRun} ({Minutes} dakika sonra)",
-//         //                 now.Add(_checkInterval).ToString("dd.MM.yyyy HH:mm:ss"),
-//         //                 _checkInterval.TotalMinutes);
-
-//         //             _logger.LogInformation("🔄 Yeni ürün kontrolü başlıyor... ({Time})",
-//         //                 now.ToString("dd.MM.yyyy HH:mm:ss"));
-
-//         //             using (var scope = _serviceProvider.CreateScope())
-//         //             {
-//         //                 var exactService = scope.ServiceProvider.GetRequiredService<ExactService>();
-//         //                 var shopifyService = scope.ServiceProvider.GetRequiredService<ShopifyService>();
-//         //                 var settingsService = scope.ServiceProvider.GetRequiredService<SettingsService>();
-
-//         //                 // Token kontrolü - ExactService içinden
-//         //                 var tokenResponse = await exactService.GetValidToken();
-//         //                 if (tokenResponse == null || string.IsNullOrEmpty(tokenResponse.access_token))
-//         //                 {
-//         //                     _logger.LogWarning("⚠️ Geçerli token yok, işlem atlanıyor. 30 dakika sonra tekrar denenecek.");
-//         //                 }
-//         //                 else
-//         //                 {
-//         //                     await ProcessNewProducts(exactService, shopifyService, settingsService);
-//         //                 }
-//         //             }
-
-//         //             _logger.LogInformation("✅ Yeni ürün kontrolü tamamlandı ({Time})",
-//         //                 DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss"));
-
-//         //             // 30 dakika bekle
-//         //             await Task.Delay(_checkInterval, stoppingToken);
-//         //         }
-//         //         catch (Exception ex)
-//         //         {
-//         //             _logger.LogError(ex, "❌ New Product Creation Service hatası: {Error}", ex.Message);
-
-//         //             // Hata durumunda da 30 dakika bekle
-//         //             try
-//         //             {
-//         //                 await Task.Delay(_checkInterval, stoppingToken);
-//         //             }
-//         //             catch (TaskCanceledException)
-//         //             {
-//         //                 // Service durduruluyor, normal davranış
-//         //                 break;
-//         //             }
-//         //         }
-//         //     }
-
-//         //     _logger.LogInformation("🛑 New Product Creation Service durduruluyor...");
-//         // }
-//         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-//         {
-//             _logger.LogInformation("🆕 New Product Creation Service başlatıldı - Çalışma Saatleri: 06:00-20:00");
-
-//             while (!stoppingToken.IsCancellationRequested)
-//             {
-//                 try
-//                 {
-//                     var now = DateTime.Now;
-
-//                     // Çalışma saatleri kontrolü: 06:00 - 20:00 arası
-//                     if (!IsWithinWorkingHours(now))
-//                     {
-//                         var nextWorkTime = GetNextWorkTime(now);
-//                         var waitTime = nextWorkTime - now;
-
-//                         _logger.LogInformation("😴 Çalışma saatleri dışında (20:00-06:00). Bekleniyor...");
-//                         _logger.LogInformation("⏰ Sonraki çalışma zamanı: {NextTime} ({Hours} saat {Minutes} dakika sonra)",
-//                             nextWorkTime.ToString("dd.MM.yyyy HH:mm:ss"),
-//                             (int)waitTime.TotalHours,
-//                             waitTime.Minutes);
-
-//                         // Sonraki çalışma zamanına kadar bekle
-//                         await Task.Delay(waitTime, stoppingToken);
-//                         continue;
-//                     }
-
-//                     _logger.LogInformation("⏰ Sonraki çalışma: {NextRun} ({Minutes} dakika sonra)",
-//                         now.Add(_checkInterval).ToString("dd.MM.yyyy HH:mm:ss"),
-//                         _checkInterval.TotalMinutes);
-
-//                     _logger.LogInformation("🔄 Yeni ürün kontrolü başlıyor... ({Time})",
-//                         now.ToString("dd.MM.yyyy HH:mm:ss"));
-
-//                     using (var scope = _serviceProvider.CreateScope())
-//                     {
-//                         var exactService = scope.ServiceProvider.GetRequiredService<ExactService>();
-//                         var shopifyService = scope.ServiceProvider.GetRequiredService<ShopifyService>();
-//                         var settingsService = scope.ServiceProvider.GetRequiredService<SettingsService>();
-
-//                         var tokenResponse = await exactService.GetValidToken();
-//                         if (tokenResponse == null || string.IsNullOrEmpty(tokenResponse.access_token))
-//                         {
-//                             _logger.LogWarning("⚠️ Geçerli token yok, işlem atlanıyor. {Minutes} dakika sonra tekrar denenecek.", _checkInterval.TotalMinutes);
-//                         }
-//                         else
-//                         {
-//                             await ProcessNewProducts(exactService, shopifyService, settingsService);
-//                         }
-//                     }
-
-//                     _logger.LogInformation("✅ Yeni ürün kontrolü tamamlandı ({Time})",
-//                         DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss"));
-
-//                     // Bir sonraki çalışma için bekleme süresi hesapla
-//                     var nextCheckTime = DateTime.Now.Add(_checkInterval);
-
-//                     // Eğer bir sonraki kontrol çalışma saatleri dışındaysa, direkt çalışma saatine atla
-//                     if (!IsWithinWorkingHours(nextCheckTime))
-//                     {
-//                         var nextWorkTime = GetNextWorkTime(nextCheckTime);
-//                         var waitTime = nextWorkTime - DateTime.Now;
-
-//                         _logger.LogInformation("😴 Bir sonraki kontrol çalışma saatleri dışında kalıyor. {NextTime} kadar bekleniyor...",
-//                             nextWorkTime.ToString("dd.MM.yyyy HH:mm:ss"));
-
-//                         await Task.Delay(waitTime, stoppingToken);
-//                     }
-//                     else
-//                     {
-//                         // Normal bekleme
-//                         await Task.Delay(_checkInterval, stoppingToken);
-//                     }
-//                 }
-//                 catch (Exception ex)
-//                 {
-//                     _logger.LogError(ex, "❌ New Product Creation Service hatası: {Error}", ex.Message);
-
-//                     try
-//                     {
-//                         await Task.Delay(_checkInterval, stoppingToken);
-//                     }
-//                     catch (TaskCanceledException)
-//                     {
-//                         break;
-//                     }
-//                 }
-//             }
-
-//             _logger.LogInformation("🛑 New Product Creation Service durduruluyor...");
-//         }
-
-//         /// <summary>
-//         /// Belirtilen zamanın çalışma saatleri içinde olup olmadığını kontrol eder (06:00 - 20:00)
-//         /// </summary>
-//         private bool IsWithinWorkingHours(DateTime time)
-//         {
-//             var hour = time.Hour;
-//             return hour >= 6 && hour < 21; // 06:00 dahil, 20:00 hariç
-//         }
-
-//         /// <summary>
-//         /// Bir sonraki çalışma zamanını hesaplar
-//         /// </summary>
-//         private DateTime GetNextWorkTime(DateTime currentTime)
-//         {
-//             var hour = currentTime.Hour;
-
-//             // Eğer saat 20:00'den sonra veya 06:00'dan önceyse
-//             if (hour >= 20)
-//             {
-//                 // Ertesi gün sabah 06:00
-//                 return currentTime.Date.AddDays(1).AddHours(6);
-//             }
-//             else if (hour < 6)
-//             {
-//                 // Aynı gün sabah 06:00
-//                 return currentTime.Date.AddHours(6);
-//             }
-
-//             // Çalışma saatleri içindeyse (normalden bu metod çağrılmamalı ama yine de)
-//             return currentTime;
-//         }
-
-//         private async Task ProcessNewProducts(ExactService exactService, ShopifyService shopifyService, SettingsService settingsService)
-//         {
-//             try
-//             {
-//                 _logger.LogInformation("🔍 Exact Online'dan yeni ürünler sorgulanıyor...");
-
-//                 // Son 24 saatte oluşturulan ve IsWebshopItem=1 olan ürünleri al
-//                 var newProducts = await exactService.GetNewCreatedProductAsync();
-
-//                 if (newProducts == null || !newProducts.Any())
-//                 {
-//                     _logger.LogInformation("ℹ️ Yeni ürün bulunamadı");
-//                     return;
-//                 }
-
-//                 _logger.LogInformation("📦 {Count} yeni ürün bulundu, Shopify'a eklenecek", newProducts.Count);
-
-//                 var batchId = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
-//                 var createdProducts = new List<NewProductArchiveItem>();
-
-//                 int successCount = 0;
-//                 int errorCount = 0;
-//                 int skippedCount = 0;
-
-//                 foreach (var exactProduct in newProducts)
-//                 {
-//                     try
-//                     {
-//                         // Validasyon
-//                         if (string.IsNullOrEmpty(exactProduct.Code))
-//                         {
-//                             _logger.LogWarning("⚠️ Ürün kodu boş, atlanıyor: {ProductId}", exactProduct.ID);
-//                             skippedCount++;
-//                             continue;
-//                         }
-
-//                         // Daha önce eklendi mi kontrol et
-//                         if (await IsProductAlreadyCreated(exactProduct.Code))
-//                         {
-//                             _logger.LogInformation("ℹ️ Ürün daha önce oluşturulmuş, atlanıyor: {Sku}", exactProduct.Code);
-//                             skippedCount++;
-//                             continue;
-//                         }
-
-//                         var logFile = _newProductLogFilePath;
-
-//                         _logger.LogInformation("🆕 Yeni ürün oluşturuluyor: SKU={Sku}, Title={Title}, Price={Price}",
-//                             exactProduct.Code, exactProduct.Description, exactProduct.StandardSalesPrice);
-
-//                         // Shopify'da ürünü oluştur
-//                         var success = await shopifyService.CreateProductAsync(exactProduct, logFile);
-
-//                         var archiveItem = new NewProductArchiveItem
-//                         {
-//                             Sku = exactProduct.Code,
-//                             Title = exactProduct.Description,
-//                             Price = exactProduct.StandardSalesPrice,
-//                             Stock = exactProduct.Stock,
-//                             Barcode = exactProduct.Barcode,
-//                             CreatedAt = DateTime.UtcNow,
-//                             Status = success ? "Success" : "Error",
-//                             ErrorMessage = success ? null : "Ürün Shopify'da oluşturulamadı",
-//                             BatchId = batchId,
-//                             ExactCreatedDate = exactProduct.Created,
-//                             ExactProductId = exactProduct.ID.ToString()
-//                         };
-
-//                         createdProducts.Add(archiveItem);
-
-//                         if (success)
-//                         {
-//                             successCount++;
-//                             _logger.LogInformation("✅ Yeni ürün başarıyla oluşturuldu: {Sku} - {Title}",
-//                                 exactProduct.Code, exactProduct.Description);
-//                         }
-//                         else
-//                         {
-//                             errorCount++;
-//                             _logger.LogWarning("❌ Yeni ürün oluşturulamadı: {Sku}", exactProduct.Code);
-//                         }
-
-//                         // Rate limiting - Shopify API limit aşımını önlemek için
-//                         await Task.Delay(1000); // 1 saniye bekleme
-//                     }
-//                     catch (Exception ex)
-//                     {
-//                         _logger.LogError(ex, "❌ Yeni ürün oluşturulurken hata: SKU={Sku}, Error={Error}",
-//                             exactProduct.Code, ex.Message);
-
-//                         var errorItem = new NewProductArchiveItem
-//                         {
-//                             Sku = exactProduct.Code ?? "UNKNOWN",
-//                             Title = exactProduct.Description ?? "N/A",
-//                             Price = exactProduct.StandardSalesPrice,
-//                             CreatedAt = DateTime.UtcNow,
-//                             Status = "Error",
-//                             ErrorMessage = ex.Message,
-//                             BatchId = batchId,
-//                             ExactCreatedDate = exactProduct.Created,
-//                             ExactProductId = exactProduct.ID.ToString()
-//                         };
-
-//                         createdProducts.Add(errorItem);
-//                         errorCount++;
-//                     }
-//                 }
-
-//                 // Archive dosyasını güncelle
-//                 if (createdProducts.Any())
-//                 {
-//                     await UpdateArchiveFileAsync(createdProducts);
-//                     _logger.LogInformation("📁 {Count} yeni ürün kaydı archive dosyasına eklendi", createdProducts.Count);
-//                 }
-
-//                 // Özet rapor
-//                 _logger.LogInformation(
-//                     "🎉 Yeni ürün işlemi tamamlandı\n" +
-//                     "   📊 Toplam Bulunan: {Total}\n" +
-//                     "   ✅ Başarılı: {Success}\n" +
-//                     "   ❌ Hatalı: {Error}\n" +
-//                     "   ⏭️ Atlanan: {Skipped}",
-//                     newProducts.Count, successCount, errorCount, skippedCount);
-
-//                 // Son sync zamanını kaydet
-//                 await settingsService.SetSettingAsync(
-//                     "LastNewProductSync",
-//                     DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-//                     "Son yeni ürün sync zamanı",
-//                     "System");
-//             }
-//             catch (Exception ex)
-//             {
-//                 _logger.LogError(ex, "❌ Yeni ürün işleme sırasında kritik hata");
-//             }
-//         }
-
-//         private async Task<bool> IsProductAlreadyCreated(string sku)
-//         {
-//             try
-//             {
-//                 if (!File.Exists(_newProductArchiveFilePath))
-//                     return false;
-
-//                 var content = await File.ReadAllTextAsync(_newProductArchiveFilePath);
-//                 if (string.IsNullOrEmpty(content))
-//                     return false;
-
-//                 var items = JsonSerializer.Deserialize<List<NewProductArchiveItem>>(content);
-//                 if (items == null)
-//                     return false;
-
-//                 // Başarılı bir şekilde oluşturulmuş mu kontrol et
-//                 return items.Any(x => x.Sku == sku && x.Status == "Success");
-//             }
-//             catch (Exception ex)
-//             {
-//                 _logger.LogWarning(ex, "Archive dosyası kontrol edilirken hata: {Error}", ex.Message);
-//                 return false;
-//             }
-//         }
-
-//         private async Task UpdateArchiveFileAsync(List<NewProductArchiveItem> newItems)
-//         {
-//             try
-//             {
-//                 List<NewProductArchiveItem> allItems = new List<NewProductArchiveItem>();
-
-//                 // Mevcut dosyayı oku (varsa)
-//                 if (File.Exists(_newProductArchiveFilePath))
-//                 {
-//                     var existingContent = await File.ReadAllTextAsync(_newProductArchiveFilePath);
-//                     if (!string.IsNullOrEmpty(existingContent))
-//                     {
-//                         var existingItems = JsonSerializer.Deserialize<List<NewProductArchiveItem>>(existingContent);
-//                         if (existingItems != null)
-//                         {
-//                             allItems.AddRange(existingItems);
-//                         }
-//                     }
-//                 }
-
-//                 // Yeni itemları ekle
-//                 allItems.AddRange(newItems);
-
-//                 // Tarihe göre sırala (en yeni en üstte)
-//                 allItems = allItems.OrderByDescending(x => x.CreatedAt).ToList();
-
-//                 // JSON formatında kaydet
-//                 var options = new JsonSerializerOptions
-//                 {
-//                     WriteIndented = true,
-//                     PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-//                 };
-
-//                 var jsonContent = JsonSerializer.Serialize(allItems, options);
-
-//                 // Dizin yoksa oluştur
-//                 var directory = Path.GetDirectoryName(_newProductArchiveFilePath);
-//                 if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-//                 {
-//                     Directory.CreateDirectory(directory);
-//                 }
-
-//                 await File.WriteAllTextAsync(_newProductArchiveFilePath, jsonContent);
-
-//                 _logger.LogDebug("💾 Archive dosyası güncellendi: {FilePath} - Toplam kayıt: {Count}",
-//                     _newProductArchiveFilePath, allItems.Count);
-//             }
-//             catch (Exception ex)
-//             {
-//                 _logger.LogError(ex, "❌ Archive dosyası güncellenirken hata: {Error}", ex.Message);
-//             }
-//         }
-
-//         // Yeni ürün kayıt sınıfı
-//         public class NewProductArchiveItem
-//         {
-//             public string Sku { get; set; }
-//             public string Title { get; set; }
-//             public decimal? Price { get; set; }
-//             public decimal? Stock { get; set; }
-//             public string Barcode { get; set; }
-//             public DateTime CreatedAt { get; set; } // Shopify'a eklenme tarihi
-//             public DateTimeOffset? ExactCreatedDate { get; set; } // Exact'ta oluşturulma tarihi
-//             public string ExactProductId { get; set; }
-//             public string Status { get; set; } // "Success", "Error"
-//             public string ErrorMessage { get; set; }
-//             public string BatchId { get; set; }
-//         }
-//     }
-// }
-
-
+using ExactOnline.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using ShopifyProductApp.Services;
@@ -588,129 +143,167 @@ namespace ShopifyProductApp.Services
 
         // ✅ DÜZELTME: ISettingsService parametresi
         private async Task ProcessNewProducts(
-            ExactService exactService, 
-            ShopifyService shopifyService, 
+            ExactService exactService,
+            ShopifyService shopifyService,
             ISettingsService settingsService)
         {
             try
             {
                 _logger.LogInformation("🔍 Exact Online'dan yeni ürünler sorgulanıyor...");
 
-                var newProducts = await exactService.GetNewCreatedProductAsync();
-
-                if (newProducts == null || !newProducts.Any())
+                //yeni müşteri var mı (webhook a geçti)
+                var customers = await exactService.GetRecentCustomerEmailsAsync(24);
+                if (customers != null && customers.Any())
                 {
-                    _logger.LogInformation("ℹ️ Yeni ürün bulunamadı");
-                    return;
-                }
-
-                _logger.LogInformation("📦 {Count} yeni ürün bulundu, Shopify'a eklenecek", newProducts.Count);
-
-                var batchId = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
-                var createdProducts = new List<NewProductArchiveItem>();
-
-                int successCount = 0;
-                int errorCount = 0;
-                int skippedCount = 0;
-
-                foreach (var exactProduct in newProducts)
-                {
-                    try
+                    foreach (var email in customers)
                     {
-                        if (string.IsNullOrEmpty(exactProduct.Code))
+                        var newcustomer = await exactService.GetCustomerByEmailAsync(email);
+                        Console.WriteLine($"Yeni Müşteri: {newcustomer.Name} - {newcustomer.Email}");
+                        if (newcustomer != null)
                         {
-                            _logger.LogWarning("⚠️ Ürün kodu boş, atlanıyor: {ProductId}", exactProduct.ID);
-                            skippedCount++;
-                            continue;
+                            var logFilePath = Path.Combine("logs", $"customer-sync-{DateTime.Now:yyyyMMdd}.log");
+
+                            // Shopify'a müşteri oluştur
+                            // var shopifyResult = await shopifyService.CreateCustomerAsync(
+                            //     newcustomer,
+                            //     "b2b-customer",
+                            //     logFilePath,
+                            //     sendWelcomeEmail: true
+                            // );
+
+                            // if (shopifyResult)
+                            // {
+                            
+                            //     Console.WriteLine($"Müşteri Shopify'a başarıyla aktarıldı: {newcustomer.Name} - {newcustomer.Email}");
+                            // }
+                            // else
+                            // {
+                              
+                            //     Console.WriteLine($"Müşteri Shopify'a aktarılamadı veya zaten mevcut: {newcustomer.Name} - {newcustomer.Email}");
+                            // }
                         }
 
-                        if (await IsProductAlreadyCreated(exactProduct.Code))
-                        {
-                            _logger.LogInformation("ℹ️ Ürün daha önce oluşturulmuş, atlanıyor: {Sku}", exactProduct.Code);
-                            skippedCount++;
-                            continue;
-                        }
-
-                        var logFile = _newProductLogFilePath;
-
-                        _logger.LogInformation("🆕 Yeni ürün oluşturuluyor: SKU={Sku}, Title={Title}, Price={Price}",
-                            exactProduct.Code, exactProduct.Description, exactProduct.StandardSalesPrice);
-
-                        var success = await shopifyService.CreateProductAsync(exactProduct, logFile);
-
-                        var archiveItem = new NewProductArchiveItem
-                        {
-                            Sku = exactProduct.Code,
-                            Title = exactProduct.Description,
-                            Price = exactProduct.StandardSalesPrice,
-                            Stock = exactProduct.Stock,
-                            Barcode = exactProduct.Barcode,
-                            CreatedAt = DateTime.UtcNow,
-                            Status = success ? "Success" : "Error",
-                            ErrorMessage = success ? null : "Ürün Shopify'da oluşturulamadı",
-                            BatchId = batchId,
-                            ExactCreatedDate = exactProduct.Created,
-                            ExactProductId = exactProduct.ID.ToString()
-                        };
-
-                        createdProducts.Add(archiveItem);
-
-                        if (success)
-                        {
-                            successCount++;
-                            _logger.LogInformation("✅ Yeni ürün başarıyla oluşturuldu: {Sku} - {Title}",
-                                exactProduct.Code, exactProduct.Description);
-                        }
-                        else
-                        {
-                            errorCount++;
-                            _logger.LogWarning("❌ Yeni ürün oluşturulamadı: {Sku}", exactProduct.Code);
-                        }
-
-                        await Task.Delay(1000);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "❌ Yeni ürün oluşturulurken hata: SKU={Sku}, Error={Error}",
-                            exactProduct.Code, ex.Message);
-
-                        var errorItem = new NewProductArchiveItem
-                        {
-                            Sku = exactProduct.Code ?? "UNKNOWN",
-                            Title = exactProduct.Description ?? "N/A",
-                            Price = exactProduct.StandardSalesPrice,
-                            CreatedAt = DateTime.UtcNow,
-                            Status = "Error",
-                            ErrorMessage = ex.Message,
-                            BatchId = batchId,
-                            ExactCreatedDate = exactProduct.Created,
-                            ExactProductId = exactProduct.ID.ToString()
-                        };
-
-                        createdProducts.Add(errorItem);
-                        errorCount++;
                     }
                 }
 
-                if (createdProducts.Any())
-                {
-                    await UpdateArchiveFileAsync(createdProducts);
-                    _logger.LogInformation("📁 {Count} yeni ürün kaydı archive dosyasına eklendi", createdProducts.Count);
-                }
 
-                _logger.LogInformation(
-                    "🎉 Yeni ürün işlemi tamamlandı\n" +
-                    "   📊 Toplam Bulunan: {Total}\n" +
-                    "   ✅ Başarılı: {Success}\n" +
-                    "   ❌ Hatalı: {Error}\n" +
-                    "   ⏭️ Atlanan: {Skipped}",
-                    newProducts.Count, successCount, errorCount, skippedCount);
 
-                await settingsService.SetSettingAsync(
-                    "LastNewProductSync",
-                    DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-                    "Son yeni ürün sync zamanı",
-                    "System");
+
+                // var newProducts = await exactService.GetNewCreatedProductAsync();
+
+                // if (newProducts == null || !newProducts.Any())
+                // {
+                //     _logger.LogInformation("ℹ️ Yeni ürün bulunamadı");
+                //     return;
+                // }
+
+                // _logger.LogInformation("📦 {Count} yeni ürün bulundu, Shopify'a eklenecek", newProducts.Count);
+
+                // var batchId = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
+                // var createdProducts = new List<NewProductArchiveItem>();
+
+                // int successCount = 0;
+                // int errorCount = 0;
+                // int skippedCount = 0;
+
+                // foreach (var exactProduct in newProducts)
+                // {
+                //     try
+                //     {
+                //         if (string.IsNullOrEmpty(exactProduct.Code))
+                //         {
+                //             _logger.LogWarning("⚠️ Ürün kodu boş, atlanıyor: {ProductId}", exactProduct.ID);
+                //             skippedCount++;
+                //             continue;
+                //         }
+
+                //         if (await IsProductAlreadyCreated(exactProduct.Code))
+                //         {
+                //             _logger.LogInformation("ℹ️ Ürün daha önce oluşturulmuş, atlanıyor: {Sku}", exactProduct.Code);
+                //             skippedCount++;
+                //             continue;
+                //         }
+
+                //         var logFile = _newProductLogFilePath;
+
+                //         _logger.LogInformation("🆕 Yeni ürün oluşturuluyor: SKU={Sku}, Title={Title}, Price={Price}",
+                //             exactProduct.Code, exactProduct.Description, exactProduct.StandardSalesPrice);
+
+                //         var success = await shopifyService.CreateProductAsync(exactProduct, logFile);
+
+                //         var archiveItem = new NewProductArchiveItem
+                //         {
+                //             Sku = exactProduct.Code,
+                //             Title = exactProduct.Description,
+                //             Price = exactProduct.StandardSalesPrice,
+                //             Stock = exactProduct.Stock,
+                //             Barcode = exactProduct.Barcode,
+                //             CreatedAt = DateTime.UtcNow,
+                //             Status = success ? "Success" : "Error",
+                //             ErrorMessage = success ? null : "Ürün Shopify'da oluşturulamadı",
+                //             BatchId = batchId,
+                //             ExactCreatedDate = exactProduct.Created,
+                //             ExactProductId = exactProduct.ID.ToString()
+                //         };
+
+                //         createdProducts.Add(archiveItem);
+
+                //         if (success)
+                //         {
+                //             successCount++;
+                //             _logger.LogInformation("✅ Yeni ürün başarıyla oluşturuldu: {Sku} - {Title}",
+                //                 exactProduct.Code, exactProduct.Description);
+                //         }
+                //         else
+                //         {
+                //             errorCount++;
+                //             _logger.LogWarning("❌ Yeni ürün oluşturulamadı: {Sku}", exactProduct.Code);
+                //         }
+
+                //         await Task.Delay(1000);
+                //     }
+                //     catch (Exception ex)
+                //     {
+                //         _logger.LogError(ex, "❌ Yeni ürün oluşturulurken hata: SKU={Sku}, Error={Error}",
+                //             exactProduct.Code, ex.Message);
+
+                //         var errorItem = new NewProductArchiveItem
+                //         {
+                //             Sku = exactProduct.Code ?? "UNKNOWN",
+                //             Title = exactProduct.Description ?? "N/A",
+                //             Price = exactProduct.StandardSalesPrice,
+                //             CreatedAt = DateTime.UtcNow,
+                //             Status = "Error",
+                //             ErrorMessage = ex.Message,
+                //             BatchId = batchId,
+                //             ExactCreatedDate = exactProduct.Created,
+                //             ExactProductId = exactProduct.ID.ToString()
+                //         };
+
+                //         createdProducts.Add(errorItem);
+                //         errorCount++;
+                //     }
+                // }
+
+                // if (createdProducts.Any())
+                // {
+                //     await UpdateArchiveFileAsync(createdProducts);
+                //     _logger.LogInformation("📁 {Count} yeni ürün kaydı archive dosyasına eklendi", createdProducts.Count);
+                // }
+
+                // _logger.LogInformation(
+                //     "🎉 Yeni ürün işlemi tamamlandı\n" +
+                //     "   📊 Toplam Bulunan: {Total}\n" +
+                //     "   ✅ Başarılı: {Success}\n" +
+                //     "   ❌ Hatalı: {Error}\n" +
+                //     "   ⏭️ Atlanan: {Skipped}",
+                //     newProducts.Count, successCount, errorCount, skippedCount);
+
+                // await settingsService.SetSettingAsync(
+                //     "LastNewProductSync",
+                //     DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                //     "Son yeni ürün sync zamanı",
+                //     "System");
             }
             catch (Exception ex)
             {

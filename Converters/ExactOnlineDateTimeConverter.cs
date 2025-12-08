@@ -67,44 +67,49 @@ namespace ExactOnline.Converters
     /// Nullable olmayan DateTime için converter
     /// </summary>
     public class ExactOnlineDateTimeRequiredConverter : JsonConverter<DateTime>
+{
+    private static readonly Regex DateRegex = new Regex(@"\/Date\((-?\d+)\)\/", RegexOptions.Compiled);
+
+    public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
-        private static readonly Regex DateRegex = new Regex(@"\/Date\((-?\d+)\)\/", RegexOptions.Compiled);
-
-        public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        if (reader.TokenType == JsonTokenType.Null)
         {
-            if (reader.TokenType == JsonTokenType.String)
+            throw new JsonException("DateTime alanı null olamaz");
+        }
+
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            var dateString = reader.GetString();
+            
+            if (string.IsNullOrWhiteSpace(dateString))
             {
-                var dateString = reader.GetString();
-                
-                if (string.IsNullOrWhiteSpace(dateString))
-                {
-                    return default;
-                }
-
-                // /Date(1632300153387)/ formatını parse et
-                var match = DateRegex.Match(dateString);
-                if (match.Success)
-                {
-                    var milliseconds = long.Parse(match.Groups[1].Value);
-                    var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-                    return epoch.AddMilliseconds(milliseconds);
-                }
-
-                // Normal ISO tarih formatı varsa onu da dene
-                if (DateTime.TryParse(dateString, out var normalDate))
-                {
-                    return normalDate;
-                }
+                throw new JsonException("DateTime alanı boş olamaz");
             }
 
-            return default;
+            // /Date(1632300153387)/ formatını parse et
+            var match = DateRegex.Match(dateString);
+            if (match.Success)
+            {
+                var milliseconds = long.Parse(match.Groups[1].Value);
+                var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                return epoch.AddMilliseconds(milliseconds);
+            }
+
+            // Normal ISO tarih formatı varsa onu da dene
+            if (DateTime.TryParse(dateString, out var normalDate))
+            {
+                return normalDate;
+            }
         }
 
-        public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
-        {
-            var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-            var milliseconds = (long)(value.ToUniversalTime() - epoch).TotalMilliseconds;
-            writer.WriteStringValue($"/Date({milliseconds})/");
-        }
+        throw new JsonException($"DateTime parse edilemedi: {reader.GetString()}");
     }
+
+    public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
+    {
+        var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var milliseconds = (long)(value.ToUniversalTime() - epoch).TotalMilliseconds;
+        writer.WriteStringValue($"/Date({milliseconds})/");
+    }
+}
 }

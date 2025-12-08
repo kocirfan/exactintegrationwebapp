@@ -1,3 +1,4 @@
+
 using Microsoft.AspNetCore.Mvc;
 using ShopifyProductApp.Services;
 using Newtonsoft.Json;
@@ -11,18 +12,26 @@ namespace ShopifyProductApp.Controllers
     public class ProductsController : ControllerBase
     {
         private readonly ExactService _exactService;
+        private readonly ExactCustomerCrud _exactCustomerService;
         private readonly ShopifyService _shopifyService;
+        private readonly ShopifyCustomerCrud _shopifyCustomerService;
         private readonly ShopifyGraphQLService _graphqlService;
         private readonly AppConfiguration _config;
         private readonly ILogger<ProductsController> _logger;
         private readonly IConfiguration _configg;
 
+        // ✅ Cache sistemi
+        private const string CUSTOMER_CACHE_PATH = "data/customers_cache.json";
+        private const int CACHE_VALIDITY_HOURS = 24;
 
-        public ProductsController(ShopifyGraphQLService graphqlService, ExactService exactService, ShopifyService shopifyService, AppConfiguration config, ILogger<ProductsController> logger, IConfiguration configg)
+
+        public ProductsController(ShopifyGraphQLService graphqlService, ExactService exactService, ExactCustomerCrud exactCustomerService,  ShopifyService shopifyService, ShopifyCustomerCrud shopifyCustomerCrud, AppConfiguration config, ILogger<ProductsController> logger, IConfiguration configg)
         {
             _graphqlService = graphqlService;
             _exactService = exactService;
+            _exactCustomerService = exactCustomerService;
             _shopifyService = shopifyService;
+            _shopifyCustomerService = shopifyCustomerCrud;
             _config = config;
             _logger = logger;
             _configg = configg;
@@ -473,93 +482,6 @@ namespace ShopifyProductApp.Controllers
         }
 
 
-        //[HttpGet("process-items")]
-        // public async Task<IActionResult> ProcessItems()
-        // {
-        //     try
-        //     {
-        //         _config.LogMessage("🚀 İşlem başlatıldı");
-        //         var items = await _exactService.();
-
-        //         if (items == null || !items.Any())
-        //         {
-        //             _config.LogMessage("⚠️ Items alınamadı veya filtreye uyan ürün bulunamadı.");
-        //             return Ok(new
-        //             {
-        //                 Success = false,
-        //                 Message = "Items alınamadı veya filtreye uyan ürün bulunamadı.",
-        //                 Timestamp = DateTime.UtcNow
-        //             });
-        //         }
-
-        //         _config.LogMessage($"📦 Toplam {items.Count} ürün bulundu");
-        //         var results = new List<object>();
-
-        //         foreach (var sku in items)
-        //         {
-        //             try
-        //             {
-        //                 _config.LogSkuAndSaveToJson(sku, "Processing", "SKU işleme başlatıldı");
-
-        //                 var directory = Path.GetDirectoryName(_config.ShopifyFilePath);
-        //                 if (!Directory.Exists(directory))
-        //                 {
-        //                     Directory.CreateDirectory(directory!);
-        //                     _config.LogMessage($"📁 Klasör oluşturuldu: {directory}");
-        //                 }
-
-        //                 await _shopifyService.UpdateProductStatusBySkuAndSaveRawAsync(sku, _config.ShopifyFilePath);
-
-        //                 results.Add(new
-        //                 {
-        //                     Sku = sku,
-        //                     Status = "Processed",
-        //                     Timestamp = DateTime.UtcNow
-        //                 });
-
-        //                 _config.SaveLastUpdatedSku(sku, "Success");
-        //                 _config.LogSkuAndSaveToJson(sku, "Success", "SKU başarıyla işlendi ve kaydedildi");
-        //             }
-        //             catch (Exception ex)
-        //             {
-        //                 _config.LogMessage($"❌ SKU {sku} işlenirken hata: {ex.Message}");
-        //                 results.Add(new
-        //                 {
-        //                     Sku = sku,
-        //                     Status = "Error",
-        //                     Error = ex.Message,
-        //                     Timestamp = DateTime.UtcNow
-        //                 });
-
-        //                 _config.SaveLastUpdatedSku(sku, "Error", ex.Message);
-        //                 _config.LogSkuAndSaveToJson(sku, "Error", $"İşlem hatası: {ex.Message}");
-        //             }
-        //         }
-
-        //         var result = new
-        //         {
-        //             Success = true,
-        //             ProcessedCount = items.Count,
-        //             Results = results,
-        //             FilePath = _config.ShopifyFilePath,
-        //             Timestamp = DateTime.UtcNow
-        //         };
-
-        //         _config.LogMessage($"🎉 İşlem tamamlandı: {items.Count} ürün işlendi");
-        //         return Ok(result);
-        //     }
-        //     catch (Exception ex)
-        //     {
-        //         _config.LogMessage($"❌ Genel hata: {ex.Message}");
-        //         return Ok(new
-        //         {
-        //             Success = false,
-        //             Error = ex.Message,
-        //             Timestamp = DateTime.UtcNow
-        //         });
-        //     }
-        // }
-
         [HttpGet("shopify-items")]
         public async Task<IActionResult> GetShopifyItems()
         {
@@ -601,29 +523,8 @@ namespace ShopifyProductApp.Controllers
 
             var data = JsonConvert.DeserializeObject<ShopifyProductResponse>(json);
 
-            // foreach (var product in data.Products)
-            // {
-            //     _config.LogMessage($"Ürün: {product.Id} - {product.Title} ({product.Vendor})");
-            // }
-
-            // _config.LogMessage($"✅ {data.Products.Count} ürün alındı");
             return Ok(json);
         }
-
-        // [HttpGet("exact-customer-test")]
-        // public async Task<IActionResult> GetAllCustomerTest()
-        // {
-        //     var customersJson = await _exactService.GetAllCustomersAsync();
-
-        //     if (!string.IsNullOrWhiteSpace(customersJson))
-        //     {
-        //         // burada JSON dolu demektir
-        //         return Content("OK", "text/plain");
-        //     }
-
-        //     // JSON boşsa normal JSON döndür
-        //     return Content(customersJson ?? "[]", "application/json");
-        // }
 
         [HttpGet("exact-customer")]
         public async Task<IActionResult> GetAll()
@@ -643,13 +544,17 @@ namespace ShopifyProductApp.Controllers
             });
         }
 
-
-
         [HttpGet("exact-warehouse")]
         public async Task<IActionResult> GetAllWarehouse()
         {
             var customersJson = await _exactService.GetAllWarehouseAsync();
-            return Content(customersJson, "application/json"); // Raw JSON döndür
+            return Content(customersJson, "application/json");
+        }
+          [HttpGet("exact-shipping")]
+        public async Task<IActionResult> GetShiping()
+        {
+            var shippingJson = await _exactService.GetAllShippingMethodAsync();
+            return Content(shippingJson, "application/json"); // Raw JSON döndür
         }
 
         [HttpGet("new-product")]
@@ -659,25 +564,17 @@ namespace ShopifyProductApp.Controllers
             return Ok(products);
         }
 
-        // [HttpGet("exact-shipping")]
-        // public async Task<IActionResult> GetShiping()
-        // {
-        //     var shippingJson = await _exactService.GetAllShippingMethodAsync();
-        //     return Content(shippingJson, "application/json"); // Raw JSON döndür
-        // }
 
-        // [HttpGet("exact-inactive-items")]
-        // public async Task<IActionResult> GetInactiveItems()
-        // {
-        //     var shippingJson = await _exactService.GetInactiveItemCodesAsync();
-        //     var jsonString = JsonConvert.SerializeObject(shippingJson);
+        //----
+        [HttpGet("updated-customer")]
+        public async Task<ActionResult> GetUpdatedCustomer()
+        {
+            var products = await _exactCustomerService.GetAllUpdateCustomersAsync();
+            return Ok(products);
+        }
+        //---
 
-        //     return Content(jsonString, "application/json");
-
-
-        // }
-
-        //get customer by email
+        // ✅ REFAKTÖRLÜ METOD: Cache ile müşteri senkronizasyonu
         [HttpGet("customer/by-email")]
         public async Task<IActionResult> GetByEmail([FromQuery] string email)
         {
@@ -686,18 +583,236 @@ namespace ShopifyProductApp.Controllers
                 return BadRequest(new { message = "Email parametresi gerekli" });
             }
 
-            var customer = await _exactService.GetCustomerByEmailAsync(email);
+            // ✅ Cache'den veya API'den müşterileri al
+            var allCustomer = await GetCustomersWithCacheAsync();
+            //var allCustomer = await _exactService.GetCustomerByEmailAsync(email);
 
-            if (customer == null)
+            // if (allCustomer == null || allCustomer.Count == 0)
+            // {
+            //     return NotFound(new { message = "Müşteri bulunamadı" });
+            // }
+
+            var results = new List<object>();
+            int successCount = 0;
+            int failureCount = 0;
+            var logFilePath = Path.Combine("logs", $"customer-sync-{DateTime.Now:yyyyMMdd}.log");
+            foreach (var customer in allCustomer)
             {
-                return NotFound(new { message = $"'{email}' email adresine sahip müşteri bulunamadı" });
-            }
+                 try
+                {
+                    var shopifyResult = await _shopifyService.CreateCustomerAsync(
+                        customer,
+                        logFilePath,
+                        sendWelcomeEmail: false
+                    );
 
+                    if (shopifyResult)
+                    {
+                        successCount++;
+                        results.Add(new
+                        {
+                            email = customer.Email,
+                            status = "✅ Başarılı",
+                            name = customer.Name
+                        });
+                        Console.WriteLine($"✅ Müşteri aktarıldı: {customer.Email}");
+                    }
+                    else
+                    {
+                        failureCount++;
+                        results.Add(new
+                        {
+                            email = customer.Email,
+                            status = "⚠️ Zaten mevcut veya hata",
+                            name = customer.Name
+                        });
+                        Console.WriteLine($"⚠️ Müşteri oluşturulamadı: {customer.Email}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failureCount++;
+                    results.Add(new
+                    {
+                        email = customer.Email,
+                        status = "❌ Hata",
+                        error = ex.Message,
+                        name = customer.Name
+                    });
+                    Console.WriteLine($"❌ Hata: {customer.Email} - {ex.Message}");
+                }
+
+            
+            }
             return Ok(new
             {
-                message = "Müşteri bulundu",
-                data = customer
+                message = "Tüm müşteriler işlendi",
+                //totalProcessed = allCustomer.Count,
+                successCount = successCount,
+                failureCount = failureCount,
+                logFile = logFilePath,
+                cacheUsed = await IsCacheValidAsync(),
+                details = results
             });
+          
+        }
+
+        // ✅ YENİ METOD: Cache'den veya API'den müşterileri al
+        private async Task<List<Account>> GetCustomersWithCacheAsync()
+        {
+            // Önce cache'yi kontrol et
+            if (await IsCacheValidAsync())
+            {
+                Console.WriteLine("📦 Cache'den müşteriler yükleniyor...");
+                return await LoadCustomersFromCacheAsync();
+            }
+
+            // Cache geçersiz veya yok, API'den yükle
+            Console.WriteLine("🔄 API'den müşteriler yükleniyor (cache yenileniyor)...");
+            var customers = await _exactService.GetAllCustomersAsync();
+
+            // Cache'e kaydet
+            if (customers != null && customers.Count > 0)
+            {
+                await SaveCustomersToCacheAsync(customers);
+                Console.WriteLine($"✅ {customers.Count} müşteri cache'e kaydedildi");
+            }
+
+            return customers;
+        }
+
+        // ✅ Cache dosyasından müşterileri oku
+        private async Task<List<Account>> LoadCustomersFromCacheAsync()
+        {
+            try
+            {
+                if (!System.IO.File.Exists(CUSTOMER_CACHE_PATH))
+                {
+                    return null;
+                }
+
+                var json = await System.IO.File.ReadAllTextAsync(CUSTOMER_CACHE_PATH);
+                var cacheData = System.Text.Json.JsonSerializer.Deserialize<CustomerCacheData>(json);
+
+                Console.WriteLine($"📦 Cache'den {cacheData?.Customers?.Count ?? 0} müşteri yüklendi");
+                return cacheData?.Customers ?? new List<Account>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Cache yükleme hatası: {ex.Message}");
+                return null;
+            }
+        }
+
+        // ✅ Müşterileri cache dosyasına kaydet
+        private async Task SaveCustomersToCacheAsync(List<Account> customers)
+        {
+            try
+            {
+                var directory = Path.GetDirectoryName(CUSTOMER_CACHE_PATH);
+                if (!Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                var cacheData = new CustomerCacheData
+                {
+                    Customers = customers,
+                    CachedAt = DateTime.UtcNow
+                };
+
+                var options = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var json = System.Text.Json.JsonSerializer.Serialize(cacheData, options);
+
+                await System.IO.File.WriteAllTextAsync(CUSTOMER_CACHE_PATH, json);
+                Console.WriteLine($"💾 Cache kaydedildi: {CUSTOMER_CACHE_PATH}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Cache kaydetme hatası: {ex.Message}");
+            }
+        }
+
+        // ✅ Cache'in hala geçerli olup olmadığını kontrol et
+        private async Task<bool> IsCacheValidAsync()
+        {
+            try
+            {
+                if (!System.IO.File.Exists(CUSTOMER_CACHE_PATH))
+                {
+                    return false;
+                }
+
+                var json = await System.IO.File.ReadAllTextAsync(CUSTOMER_CACHE_PATH);
+                var cacheData = System.Text.Json.JsonSerializer.Deserialize<CustomerCacheData>(json);
+
+                if (cacheData?.CachedAt == null)
+                {
+                    return false;
+                }
+
+                var cacheAge = DateTime.UtcNow - cacheData.CachedAt;
+                var isValid = cacheAge.TotalHours < CACHE_VALIDITY_HOURS;
+
+                if (isValid)
+                {
+                    Console.WriteLine($"✅ Cache geçerli ({cacheAge.TotalMinutes:F1} dakika eski)");
+                }
+                else
+                {
+                    Console.WriteLine($"⏳ Cache eski ({cacheAge.TotalHours:F1} saat) - yenilenecek");
+                }
+
+                return isValid;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Cache kontrolü hatası: {ex.Message}");
+                return false;
+            }
+        }
+
+        // ✅ Cache'i manuel olarak yenile
+        [HttpPost("refresh-customer-cache")]
+        public async Task<IActionResult> RefreshCustomerCache()
+        {
+            Console.WriteLine("🔄 Müşteri cache'i manuel olarak yenileniyor...");
+
+            var customers = await _exactService.GetAllCustomersAsync();
+
+            if (customers != null && customers.Count > 0)
+            {
+                await SaveCustomersToCacheAsync(customers);
+                return Ok(new
+                {
+                    message = "Müşteri cache'i başarıyla yenilendi",
+                    customerCount = customers.Count,
+                    cachedAt = DateTime.UtcNow
+                });
+            }
+
+            return BadRequest(new { message = "Müşteri verileri alınamadı" });
+        }
+
+        // ✅ Cache'i temizle
+        [HttpDelete("clear-customer-cache")]
+        public IActionResult ClearCustomerCache()
+        {
+            try
+            {
+                if (System.IO.File.Exists(CUSTOMER_CACHE_PATH))
+                {
+                    System.IO.File.Delete(CUSTOMER_CACHE_PATH);
+                    Console.WriteLine("🗑️ Müşteri cache'i temizlendi");
+                    return Ok(new { message = "Müşteri cache'i başarıyla temizlendi" });
+                }
+
+                return NotFound(new { message = "Cache dosyası bulunamadı" });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = $"Cache silme hatası: {ex.Message}" });
+            }
         }
 
         [HttpGet("exact-inactive-items")]
@@ -707,7 +822,6 @@ namespace ShopifyProductApp.Controllers
             {
                 _logger.LogInformation("🔍 Exact'ten inactive ürünler getiriliyor...");
 
-                // 1. Exact'ten inactive ürün kodlarını al
                 var inactiveSkus = await _exactService.GetInactiveItemCodesAsync();
 
                 if (inactiveSkus == null || !inactiveSkus.Any())
@@ -725,9 +839,8 @@ namespace ShopifyProductApp.Controllers
 
                 _logger.LogInformation($"✅ Exact'ten {inactiveSkus.Count} inactive ürün alındı");
 
-                // 2. Bu SKU'ları Shopify'da ara
                 var shopifyMatches = new List<object>();
-                var foundSkuList = new List<string>(); // Bulunan SKU'ları topla
+                var foundSkuList = new List<string>();
                 var notFoundSkus = new List<string>();
                 int processedCount = 0;
 
@@ -738,31 +851,25 @@ namespace ShopifyProductApp.Controllers
 
                     try
                     {
-                        // Shopify'da bu SKU'yu ara
                         var searchResult = await _shopifyService.GetProductBySkuWithDuplicateHandlingAsync(sku);
                         if (searchResult.Found)
                         {
                             _logger.LogInformation($"   ✅ Bulundu: {searchResult.Match.ProductTitle}");
-                            foundSkuList.Add(sku); // SKU'yu listeye ekle
+                            foundSkuList.Add(sku);
                         }
                         else
                         {
                             _logger.LogWarning($"   ❌ Bulunamadı: {sku}");
                             notFoundSkus.Add(sku);
-
-
                         }
-                        await Task.Delay(300); // 300ms
+                        await Task.Delay(300);
                     }
                     catch (Exception ex)
                     {
                         _logger.LogError($"   ❌ Hata: {sku} - {ex.Message}");
-
-
                     }
                 }
 
-                // 3. Döngü bittikten SONRA toplu güncelleme yap
                 if (foundSkuList.Any())
                 {
                     _logger.LogInformation($"🔄 {foundSkuList.Count} ürün için toplu güncelleme başlatılıyor...");
@@ -811,7 +918,6 @@ namespace ShopifyProductApp.Controllers
             }
         }
 
-
         [HttpGet("get-item-by-code")]
         public async Task<IActionResult> GetItemByCode([FromQuery] string code)
         {
@@ -830,14 +936,18 @@ namespace ShopifyProductApp.Controllers
             return Ok(item);
         }
 
-
-        // 2 günlük siparişler
         [HttpGet("exact-recent-orders")]
         public async Task<IActionResult> GetRecentOrders()
         {
             var orders = await _exactService.GetRecentOrdersRawJsonAsync();
             return Ok(orders);
         }
+    }
 
+    // ✅ Cache veri modeli
+    public class CustomerCacheData
+    {
+        public List<Account> Customers { get; set; }
+        public DateTime CachedAt { get; set; }
     }
 }

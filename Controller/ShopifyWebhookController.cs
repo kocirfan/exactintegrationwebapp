@@ -184,7 +184,7 @@ namespace ShopifyProductApp.Controllers
                             UnitPrice = unitPrice,                      // 299.00 (Orijinal)
                             NetPrice = unitPriceWithDiscount,           // 179.40 (İndirimli)
                             Discount = discountPercentage,              // 40.00 (YÜZDE!)
-                            //VATPercentage = vatPercentage,            //VATPercentage = vatPercentage,
+                            VATPercentage = vatPercentage,            //VATPercentage = vatPercentage,
                             UnitCode = exactItem.Unit?.Trim() ?? "pc",
                             DeliveryDate = DateTime.Now.AddDays(7),
                             Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
@@ -240,6 +240,36 @@ namespace ShopifyProductApp.Controllers
                 _logger.LogInformation($"   Ara Toplam (KDV dahil): {currentSubtotalPrice}€");
                 _logger.LogInformation($"   KDV Tutarı: {currentTotalTax}€");
 
+                //shiping method ekle
+                //13 --> f4b84d79-3796-4fdc-a24e-08cd7628ce82
+                // Mağazadan teslim  02 --> 19eb5f3e-7131-4d48-8a38-5b66eb44aa5b
+                Guid shippingMethodGuid = Guid.Parse("19eb5f3e-7131-4d48-8a38-5b66eb44aa5b"); // Varsayılan: Mağazadan teslim
+                if (shopifyOrder.ShippingLines != null && shopifyOrder.ShippingLines.Any())
+                {
+                    var shippingLine = shopifyOrder.ShippingLines.FirstOrDefault();
+                    bool hasVerzendkosten = shippingLine?.Title?.Contains("Verzendkosten") ?? false;
+                    bool hasShippingAddress = shopifyOrder.ShippingAddress != null;
+
+                    _logger.LogInformation($"🚚 Shipping Kontrol:");
+                    _logger.LogInformation($"   Verzendkosten içeriyor: {hasVerzendkosten}");
+                    _logger.LogInformation($"   Gönderim Adresi Belirtilmiş: {hasShippingAddress}");
+                    _logger.LogInformation($"   Shipping Title: {shippingLine?.Title ?? "null"}");
+
+                    if (hasVerzendkosten && hasShippingAddress)
+                    {
+                        shippingMethodGuid = Guid.Parse("f4b84d79-3796-4fdc-a24e-08cd7628ce82"); // Kargo
+                        _logger.LogInformation($"   ✅ Kargo seçildi");
+                    }
+                    else
+                    {
+                        _logger.LogInformation($"   ℹ️ Mağazadan teslim seçildi (varsayılan)");
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation($"   ℹ️ Shipping lines bulunamadı, Mağazadan teslim seçildi (varsayılan)");
+                }
+
                 var exactOrder = new ExactOrder
                 {
                     OrderedBy = customerId.Value,
@@ -252,7 +282,7 @@ namespace ShopifyProductApp.Controllers
                     Division = 553201,
                     WarehouseID = warehouseGuid,
                     SalesOrderLines = salesOrderLines,
-                    ShippingMethod = Guid.Parse("0a71ba23-b4ee-403d-a934-0188e1d63841"),
+                    ShippingMethod = shippingMethodGuid,
 
                     // Amount değerlerini Exact hesaplasın
                     AmountDC = currentSubtotalPrice - currentTotalTax,  // KDV hariç

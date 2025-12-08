@@ -201,6 +201,7 @@ public class ExactService
         {
             try
             {
+
                 // var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/Items?$filter=Modified gt datetime'{dateFilter}'&$top={top}&$skip={skip}";
                 var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/Items?$filter=(Created gt datetime'{dateFilter}' or Modified gt datetime'{dateFilter}')&$top={top}&$skip={skip}";
                 var resp = await client.GetAsync(url);
@@ -921,6 +922,16 @@ public class ExactService
                 if (dict.ContainsKey("ID"))
                 {
                     _logger.LogInformation($"🆔 Ürün ID: {dict["ID"]}");
+                    var itemId = dict["ID"].ToString();
+                    bool hasBundle = await GetItemExtraFieldAsync(itemId);
+                    if (hasBundle)
+                    {
+                        _logger.LogInformation($"✅ isBundle mevcut ve dolu.");
+                    }
+                    else
+                    {
+                        _logger.LogInformation($"ℹ️ isBundle mevcut değil veya boş/false.");
+                    }
                 }
 
                 return dict;
@@ -964,6 +975,112 @@ public class ExactService
         return null;
     }
 
+    public async Task<bool> GetItemExtraFieldAsync(string itemId)
+    {
+        var token = await GetValidToken();
+        if (token == null)
+        {
+            _logger.LogError("❌ Token alınamadı");
+            return false;
+        }
+
+        using var client = new HttpClient();
+        client.Timeout = TimeSpan.FromMinutes(2);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        try
+        {
+            var url = $"{_baseUrl}/api/v1/{_divisionCode}/read/logistics/ItemExtraField?itemId=guid'{itemId}'";
+
+            _logger.LogInformation($"🔍 Ekstra alanlar aranıyor: ItemID = {itemId}");
+            _logger.LogInformation($"📡 API URL: {url}");
+
+            var response = await client.GetAsync(url);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError($"❌ API Hatası: {response.StatusCode} - {response.ReasonPhrase}");
+                return false;
+            }
+
+            var json = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+
+            if (!doc.RootElement.TryGetProperty("d", out var dataElement))
+            {
+                _logger.LogWarning("⚠️ Beklenmeyen JSON yapısı: 'd' property bulunamadı");
+                return false;
+            }
+
+            JsonElement resultsElement;
+            if (dataElement.ValueKind == JsonValueKind.Object && dataElement.TryGetProperty("results", out var res))
+            {
+                resultsElement = res;
+            }
+            else if (dataElement.ValueKind == JsonValueKind.Array)
+            {
+                resultsElement = dataElement;
+            }
+            else
+            {
+                _logger.LogWarning("⚠️ Beklenmeyen JSON yapısı");
+                return false;
+            }
+
+            // ✅ Boş array kontrolü
+            if (resultsElement.GetArrayLength() == 0)
+            {
+                _logger.LogInformation($"ℹ️ Ekstra alan bulunamadı: ItemID = {itemId}");
+                return false;
+            }
+
+            _logger.LogInformation($"✅ Ekstra alanlar bulundu: ItemID = {itemId}");
+
+            // ✅ Tüm alanları oku ve "Description" = "isBundle" olanını bul
+            for (int i = 0; i < resultsElement.GetArrayLength(); i++)
+            {
+                var item = resultsElement[i];
+                var description = string.Empty;
+                var value = string.Empty;
+
+                foreach (var prop in item.EnumerateObject())
+                {
+                    if (prop.Name == "Description")
+                    {
+                        description = prop.Value.GetString() ?? string.Empty;
+                    }
+                    else if (prop.Name == "Value")
+                    {
+                        value = prop.Value.GetString() ?? string.Empty;
+                    }
+                }
+
+                // ✅ isBundle bulundu ve değeri dolu mu kontrol et
+                if (description.Equals("isBundle", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.IsNullOrEmpty(value))
+                    {
+                        _logger.LogInformation($"✅ isBundle bulundu ve dolu: Value = {value}");
+                        return true;
+                    }
+                    else
+                    {
+                        _logger.LogInformation($"ℹ️ isBundle bulundu ancak boş");
+                        return false;
+                    }
+                }
+            }
+
+            _logger.LogWarning($"⚠️ Description = 'isBundle' olan property bulunamadı");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"❌ Beklenemeyen hata: {ex.Message}");
+            return false;
+        }
+    }
 
 
 
@@ -1126,198 +1243,433 @@ public class ExactService
 
     // hem webshop hem 24 saatte güncellenen ürünler
 
-    public async Task<ExactProductResponse> GetItemsWebShopAndModified(int maxItems = 5000)
+   public async Task<ExactProductResponse> GetItemsWebShopAndModified(int maxItems = 5000)
+{
+    var response = new ExactProductResponse
     {
-        var response = new ExactProductResponse
-        {
-            Success = false,
-            ProcessedCount = 0,
-            Results = new List<ExactProduct>()
-        };
+        Success = false,
+        ProcessedCount = 0,
+        Results = new List<ExactProduct>()
+    };
 
-        var token = await GetValidToken();
-        if (token == null)
-        {
-            Console.WriteLine("❌ Token alınamadı");
-            return response;
-        }
-
-        using var client = new HttpClient();
-
-        // Timeout ekle
-        client.Timeout = TimeSpan.FromMinutes(10);
-
-        client.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", token.access_token);
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-        // Son 24 saatlik filtre
-        var yesterday = DateTime.UtcNow.AddDays(-1);
-        var dateFilter = yesterday.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
-
-        int top = 60; // Exact Online limitine uygun
-        int skip = 0;
-        int retryCount = 0;
-        const int maxRetries = 3;
-
-        Console.WriteLine($"🕐 Son 24 saat filtresi: Modified > {dateFilter}");
-
-        while (true)
-        {
-            try
-            {
-                // Hem webshop item hem de son 24 saatte güncellenmiş filtresi
-                var filterQuery = $"IsWebshopItem eq 1 and Modified gt datetime'{dateFilter}'";
-                var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/Items?$filter={Uri.EscapeDataString(filterQuery)}&$top={top}&$skip={skip}";
-
-                Console.WriteLine($"📡 API çağrısı: Sayfa {skip / top + 1}");
-
-                var resp = await client.GetAsync(url);
-
-                // Detaylı hata yönetimi
-                if (!resp.IsSuccessStatusCode)
-                {
-                    Console.WriteLine($"❌ API Hatası: {resp.StatusCode} - {resp.ReasonPhrase}");
-
-                    // Rate limiting durumunda bekle ve tekrar dene
-                    if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests && retryCount < maxRetries)
-                    {
-                        retryCount++;
-                        Console.WriteLine($"⏳ Rate limit aşıldı, {retryCount}. deneme için 30 saniye bekleniyor...");
-                        await Task.Delay(30000); // 30 saniye bekle
-                        continue;
-                    }
-
-                    // Token süresi dolmuşsa
-                    if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
-                    {
-                        Console.WriteLine("🔑 Token süresi dolmuş olabilir, yeniden deneniyor...");
-                        token = await GetValidToken();
-                        if (token == null) break;
-
-                        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
-                        continue;
-                    }
-
-                    // Hata detaylarını al
-                    var errorContent = await resp.Content.ReadAsStringAsync();
-                    Console.WriteLine($"📄 Hata detayı: {errorContent}");
-                    return response; // Hata durumunda response döndür
-                }
-
-                retryCount = 0; // Başarılı istek sonrası retry sayacını sıfırla
-
-                var json = await resp.Content.ReadAsStringAsync();
-                using var doc = JsonDocument.Parse(json);
-
-                // JSON yapısı kontrol
-                if (!doc.RootElement.TryGetProperty("d", out var dataElement))
-                {
-                    Console.WriteLine("⚠️ Beklenmeyen JSON yapısı: 'd' property bulunamadı");
-                    return response;
-                }
-
-                JsonElement resultsElement;
-                if (dataElement.ValueKind == JsonValueKind.Object && dataElement.TryGetProperty("results", out var res))
-                {
-                    resultsElement = res;
-                }
-                else if (dataElement.ValueKind == JsonValueKind.Array)
-                {
-                    resultsElement = dataElement;
-                }
-                else
-                {
-                    Console.WriteLine("⚠️ Beklenmeyen JSON yapısı");
-                    return response;
-                }
-
-                int countInPage = 0;
-
-                foreach (var item in resultsElement.EnumerateArray())
-                {
-                    // Maksimum item sayısını kontrol et
-                    if (response.Results.Count >= maxItems)
-                    {
-                        Console.WriteLine($"⚠️ Maksimum item limiti ({maxItems}) aşıldı, işlem durduruluyor");
-                        response.Success = true;
-                        response.ProcessedCount = response.Results.Count;
-                        return response;
-                    }
-
-                    try
-                    {
-                        // System.Text.Json ile deserialize et
-                        var options = new JsonSerializerOptions
-                        {
-                            PropertyNameCaseInsensitive = true,
-                            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-                        };
-
-                        var jsonString = item.GetRawText();
-                        var exactProduct = JsonSerializer.Deserialize<ExactProduct>(jsonString, options);
-
-                        if (exactProduct != null)
-                        {
-                            response.Results.Add(exactProduct);
-                            countInPage++;
-                        }
-                    }
-                    catch (JsonException ex)
-                    {
-                        Console.WriteLine($"⚠️ Ürün deserialize hatası: {ex.Message}");
-                        // Hatalı ürünü atla, devam et
-                    }
-                }
-
-                Console.WriteLine($"📦 Sayfa {skip / top + 1}: {countInPage} ürün alındı. Toplam: {response.Results.Count}");
-
-                if (countInPage < top) break; // Son sayfa
-                skip += top;
-
-                // API rate limiting için kısa bekleme
-                await Task.Delay(200); // 200ms bekleme
-            }
-            catch (TaskCanceledException ex)
-            {
-                Console.WriteLine($"⏰ Timeout hatası: {ex.Message}");
-                break;
-            }
-            catch (HttpRequestException ex)
-            {
-                Console.WriteLine($"🌐 Network hatası: {ex.Message}");
-
-                if (retryCount < maxRetries)
-                {
-                    retryCount++;
-                    Console.WriteLine($"🔄 {retryCount}. deneme için 5 saniye bekleniyor...");
-                    await Task.Delay(5000);
-                    continue;
-                }
-                break;
-            }
-            catch (JsonException ex)
-            {
-                Console.WriteLine($"📄 JSON parse hatası: {ex.Message}");
-                break;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Beklenmeyen hata: {ex.Message}");
-                break;
-            }
-        }
-
-        // Başarılı tamamlama
-        response.Success = true;
-        response.ProcessedCount = response.Results.Count;
-
-        Console.WriteLine($"✅ Son 24 saatte güncellenen webshop ürünleri: {response.ProcessedCount} adet");
+    var token = await GetValidToken();
+    if (token == null)
+    {
+        Console.WriteLine("❌ Token alınamadı");
         return response;
     }
 
+    using var client = new HttpClient();
+    client.Timeout = TimeSpan.FromMinutes(10);
+    client.DefaultRequestHeaders.Authorization =
+        new AuthenticationHeaderValue("Bearer", token.access_token);
+    client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+    var yesterday = DateTime.UtcNow.AddDays(-2);
+    var dateFilter = yesterday.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+
+    int top = 60;
+    int skip = 0;
+    int retryCount = 0;
+    const int maxRetries = 1000;
+    bool hasMorePages = true;
+    int pageNumber = 1;
+
+    Console.WriteLine($"🕐 Son 24 saat filtresi: Modified > {dateFilter}");
+    Console.WriteLine($"📊 Maksimum item limiti: {maxItems}");
+
+    while (hasMorePages)
+    {
+        try
+        {
+            var filterQuery = $"IsWebshopItem eq 1 and Modified gt datetime'{dateFilter}'";
+            var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/Items?$filter={Uri.EscapeDataString(filterQuery)}&$top={top}&$skip={skip}";
+
+            Console.WriteLine($"\n📡 API çağrısı: Sayfa {pageNumber}, Skip: {skip}, Top: {top}");
+
+            var resp = await client.GetAsync(url);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"❌ API Hatası: {resp.StatusCode}");
+
+                if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests && retryCount < maxRetries)
+                {
+                    retryCount++;
+                    Console.WriteLine($"⏳ Rate limit, {retryCount}. deneme için 30 saniye bekleniyor...");
+                    await Task.Delay(30000);
+                    continue;
+                }
+
+                if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    Console.WriteLine("🔑 Token yenileniyor...");
+                    token = await GetValidToken();
+                    if (token == null) break;
+                    client.DefaultRequestHeaders.Authorization = 
+                        new AuthenticationHeaderValue("Bearer", token.access_token);
+                    continue;
+                }
+
+                var errorContent = await resp.Content.ReadAsStringAsync();
+                Console.WriteLine($"📄 Hata detayı: {errorContent}");
+                return response;
+            }
+
+            retryCount = 0;
+
+            var json = await resp.Content.ReadAsStringAsync();
+
+            // ✅ İlk sayfayı debug et
+            if (pageNumber == 1)
+            {
+                var previewLength = Math.Min(800, json.Length);
+                Console.WriteLine($"\n🔍 API Yanıtı (ilk {previewLength} karakter):\n{json.Substring(0, previewLength)}...\n");
+            }
+
+            using var doc = JsonDocument.Parse(json);
+
+            if (!doc.RootElement.TryGetProperty("d", out var dataElement))
+            {
+                Console.WriteLine("⚠️ JSON yapısı hatalı - 'd' property bulunamadı");
+                return response;
+            }
+
+            JsonElement resultsElement;
+            if (dataElement.ValueKind == JsonValueKind.Object && dataElement.TryGetProperty("results", out var res))
+            {
+                resultsElement = res;
+            }
+            else if (dataElement.ValueKind == JsonValueKind.Array)
+            {
+                resultsElement = dataElement;
+            }
+            else
+            {
+                Console.WriteLine("⚠️ JSON yapısı beklenen formatta değil");
+                return response;
+            }
+
+            // ✅ API'dan gelen toplam ürün sayısı
+            int apiReturnCount = resultsElement.GetArrayLength();
+            Console.WriteLine($"📊 Sayfa {pageNumber}: API'dan gelen ürün sayısı: {apiReturnCount}");
+
+            int countInPage = 0;
+            int nullCount = 0;
+            int deserializeErrorCount = 0;
+
+            foreach (var item in resultsElement.EnumerateArray())
+            {
+                // ✅ maxItems kontrolü ÖNCESINDE
+                if (response.Results.Count >= maxItems)
+                {
+                    Console.WriteLine($"⚠️ Maksimum limit ({maxItems}) aşıldı!");
+                    hasMorePages = false;
+                    break;
+                }
+
+                try
+                {
+                    var options = new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true,
+                        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+                    };
+
+                    var jsonString = item.GetRawText();
+                    var exactProduct = JsonSerializer.Deserialize<ExactProduct>(jsonString, options);
+
+                    if (exactProduct != null)
+                    {
+                        // ✅ Ürünün gerekli alanlarını kontrol et
+                        if (string.IsNullOrEmpty(exactProduct.Code))
+                        {
+                            Console.WriteLine($"⚠️ Ürün Code alanı boş (ID: {exactProduct.ID})");
+                        }
+
+                        response.Results.Add(exactProduct);
+                        countInPage++;
+                    }
+                    else
+                    {
+                        nullCount++;
+                        Console.WriteLine($"⚠️ Ürün null döndü (deserialize başarısız)");
+                    }
+                }
+                catch (JsonException ex)
+                {
+                    deserializeErrorCount++;
+                    Console.WriteLine($"⚠️ Deserialize hatası: {ex.Message}");
+                }
+                catch (Exception ex)
+                {
+                    deserializeErrorCount++;
+                    Console.WriteLine($"❌ Beklenmeyen hata (item işleme): {ex.Message}");
+                }
+            }
+
+            // ✅ Detaylı sayfa özeti
+            Console.WriteLine($"───────────────────────────────────────");
+            Console.WriteLine($"✅ Sayfa {pageNumber} - Özet:");
+            Console.WriteLine($"   API'dan gelen: {apiReturnCount}");
+            Console.WriteLine($"   Başarıyla işlenen: {countInPage}");
+            Console.WriteLine($"   Null ürün: {nullCount}");
+            Console.WriteLine($"   Deserialize hatası: {deserializeErrorCount}");
+            Console.WriteLine($"   Toplam işlenen (tüm sayfalar): {response.Results.Count}/{maxItems}");
+            Console.WriteLine($"───────────────────────────────────────\n");
+
+            // ✅ Sayfanın durumu kontrol et
+            if (apiReturnCount < top)
+            {
+                Console.WriteLine($"✅ Son sayfaya ulaşıldı (API'dan {apiReturnCount} ürün geldi, expected: {top})");
+                hasMorePages = false;
+            }
+            else if (countInPage == 0 && apiReturnCount > 0)
+            {
+                Console.WriteLine($"⚠️ API ürün döndürdü ({apiReturnCount}) ama hiçbiri işlenmedi!");
+                Console.WriteLine($"   Null sayısı: {nullCount}, Deserialize hatası: {deserializeErrorCount}");
+                hasMorePages = false;
+                break;
+            }
+            else
+            {
+                skip += top;
+                pageNumber++;
+                Console.WriteLine($"➡️ Sonraki sayfaya geçiliyor (skip: {skip})");
+            }
+
+            await Task.Delay(200);
+        }
+        catch (TaskCanceledException ex)
+        {
+            Console.WriteLine($"⏰ Timeout: {ex.Message}");
+            break;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Hata: {ex.GetType().Name} - {ex.Message}");
+            break;
+        }
+    }
+
+    response.Success = true;
+    response.ProcessedCount = response.Results.Count;
+
+    Console.WriteLine($"\n🎉 İşlem Tamamlandı!");
+    Console.WriteLine($"✅ Toplam işlenen ürün: {response.ProcessedCount}");
+    Console.WriteLine($"📊 Maksimum limit: {maxItems}");
+
+    return response;
+}
+
 
     // saddece stok 0 dan büyük olan ürünler
+    // public async Task<List<Dictionary<string, object>>?> GetAllStockedItemsAsync()
+    // {
+    //     var token = await GetValidToken();
+    //     if (token == null) return null;
+
+    //     using var client = new HttpClient();
+    //     client.Timeout = TimeSpan.FromMinutes(15);
+    //     client.DefaultRequestHeaders.Authorization =
+    //         new AuthenticationHeaderValue("Bearer", token.access_token);
+    //     client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+    //     int top = 60;
+    //     int skip = 0;
+    //     var allStockedItems = new List<Dictionary<string, object>>();
+    //     int retryCount = 0;
+    //     const int maxRetries = 3;
+
+    //     Console.WriteLine("📦 Tüm webshop ürünleri alınıyor ve stok kontrolü yapılıyor...");
+
+    //     while (true)
+    //     {
+    //         try
+    //         {
+    //             var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/Items?$filter=IsWebshopItem eq 1&$top={top}&$skip={skip}";
+    //             Console.WriteLine($"📡 API çağrısı: Sayfa {skip / top + 1}");
+
+    //             var resp = await client.GetAsync(url);
+
+    //             if (!resp.IsSuccessStatusCode)
+    //             {
+    //                 Console.WriteLine($"❌ API Hatası: {resp.StatusCode} - {resp.ReasonPhrase}");
+
+    //                 if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests && retryCount < maxRetries)
+    //                 {
+    //                     retryCount++;
+    //                     Console.WriteLine($"⏳ Rate limit aşıldı, {retryCount}. deneme için 30 saniye bekleniyor...");
+    //                     await Task.Delay(30000);
+    //                     continue;
+    //                 }
+
+    //                 if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+    //                 {
+    //                     Console.WriteLine("🔑 Token süresi dolmuş olabilir, yeniden deneniyor...");
+    //                     token = await GetValidToken();
+    //                     if (token == null) break;
+    //                     client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+    //                     continue;
+    //                 }
+
+    //                 break;
+    //             }
+
+    //             retryCount = 0;
+    //             var json = await resp.Content.ReadAsStringAsync();
+    //             using var doc = JsonDocument.Parse(json);
+
+    //             if (!doc.RootElement.TryGetProperty("d", out var dataElement))
+    //             {
+    //                 Console.WriteLine("⚠️ Beklenmeyen JSON yapısı: 'd' property bulunamadı");
+    //                 break;
+    //             }
+
+    //             JsonElement resultsElement;
+    //             if (dataElement.ValueKind == JsonValueKind.Object && dataElement.TryGetProperty("results", out var res))
+    //             {
+    //                 resultsElement = res;
+    //             }
+    //             else if (dataElement.ValueKind == JsonValueKind.Array)
+    //             {
+    //                 resultsElement = dataElement;
+    //             }
+    //             else
+    //             {
+    //                 _logger.LogError("Beklenmeyen JSON yapısı, mevcut sonuçlar döndürülüyor");
+    //                 return allStockedItems;
+    //             }
+
+    //             int countInPage = 0;
+    //             int stockedInPage = 0;
+
+    //             foreach (var item in resultsElement.EnumerateArray())
+    //             {
+    //                 var dict = new Dictionary<string, object>();
+    //                 foreach (var prop in item.EnumerateObject())
+    //                 {
+    //                     dict[prop.Name] = prop.Value.ValueKind switch
+    //                     {
+    //                         JsonValueKind.Number => prop.Value.GetDouble(),
+    //                         JsonValueKind.String => prop.Value.GetString() ?? string.Empty,
+    //                         JsonValueKind.True => true,
+    //                         JsonValueKind.False => false,
+    //                         JsonValueKind.Null => string.Empty,
+    //                         _ => prop.Value.ToString() ?? string.Empty
+    //                     };
+    //                 }
+
+    //                 // Stok kontrolü - verdiğiniz test kodundaki mantık
+    //                 bool hasStock = false;
+    //                 double stockValue = 0;
+
+    //                 foreach (var kvp in dict)
+    //                 {
+    //                     // Stok ile ilgili field'ları tespit et
+    //                     if (kvp.Key.ToLower().Contains("stock") ||
+    //                         kvp.Key.ToLower().Contains("quantity") ||
+    //                         kvp.Key.ToLower().Contains("available"))
+    //                     {
+    //                         // && value > 0
+    //                         if (double.TryParse(kvp.Value.ToString(), out double value))
+    //                         {
+    //                             hasStock = true;
+    //                             stockValue = value;
+    //                             Console.WriteLine($"   🔍 STOK FIELD BULUNDU: {kvp.Key} = {value} (SKU: {dict.GetValueOrDefault("Code", "N/A")})");
+    //                             break; // İlk pozitif stok bulunca dur
+    //                         }
+    //                     }
+    //                 }
+
+    //                 // ✅ Sadece stoku olan ürünleri kontrol et
+    //                 // if (hasStock)
+    //                 // {
+
+    //                 // }
+    //                  // ✅ isBundle kontrolü ekle
+    //                     string itemId = dict.GetValueOrDefault("ID", "").ToString();
+
+    //                     // if (string.IsNullOrEmpty(itemId))
+    //                     // {
+    //                     //     Console.WriteLine($"   ⚠️ Ürün ID'si bulunamadı: {dict.GetValueOrDefault("Code", "N/A")}");
+    //                     //     continue;
+    //                     // }
+
+    //                     // ✅ isBundle kontrolü yap
+    //                     bool isBundle = await GetItemExtraFieldAsync(itemId);
+
+    //                     if (isBundle)
+    //                     {
+    //                         Console.WriteLine($"   🚫 Bundle ürünü atlandı: {dict.GetValueOrDefault("Code", "N/A")} (ID: {itemId})");
+    //                         continue; // Bundle ürünü listeye ekleme
+    //                     }
+
+    //                     // ✅ Sadece stoklu ve bundle olmayan ürünleri listeye ekle
+    //                     allStockedItems.Add(dict);
+    //                     stockedInPage++;
+    //                     Console.WriteLine($"   ✅ Stoklu ürün eklendi: {dict.GetValueOrDefault("Code", "N/A")} (Stok: {stockValue})");
+
+    //                 countInPage++;
+    //             }
+
+    //             Console.WriteLine($"📦 Sayfa {skip / top + 1}: {countInPage} ürün alındı, {stockedInPage} stoklu ürün bulundu. Toplam stoklu: {allStockedItems.Count}");
+
+    //             if (countInPage < top) break; // Son sayfa
+    //             skip += top;
+
+    //             // API rate limiting
+    //             await Task.Delay(200);
+    //         }
+    //         catch (TaskCanceledException ex)
+    //         {
+    //             Console.WriteLine($"⏰ Timeout hatası: {ex.Message}");
+    //             break;
+    //         }
+    //         catch (HttpRequestException ex)
+    //         {
+    //             Console.WriteLine($"🌐 Network hatası: {ex.Message}");
+    //             if (retryCount < maxRetries)
+    //             {
+    //                 retryCount++;
+    //                 Console.WriteLine($"🔄 {retryCount}. deneme için 5 saniye bekleniyor...");
+    //                 await Task.Delay(5000);
+    //                 continue;
+    //             }
+    //             break;
+    //         }
+    //         catch (Exception ex)
+    //         {
+    //             Console.WriteLine($"❌ Beklenmeyen hata: {ex.Message}");
+    //             break;
+    //         }
+    //     }
+
+    //     Console.WriteLine($"✅ Toplam {allStockedItems.Count} stoklu ve bundle olmayan ürün başarıyla alındı");
+
+    //     // Stok bilgilerinin özetini göster
+    //     if (allStockedItems.Any())
+    //     {
+    //         Console.WriteLine("📊 Stok özeti:");
+    //         var stockSummary = allStockedItems
+    //             .Where(item => item.ContainsKey("Code"))
+    //             .Take(5)
+    //             .Select(item => new
+    //             {
+    //                 Code = item["Code"],
+    //                 Stock = item.FirstOrDefault(kvp => kvp.Key.ToLower().Contains("stock")).Value ?? 0
+    //             });
+
+    //         foreach (var summary in stockSummary)
+    //         {
+    //             Console.WriteLine($"   - {summary.Code}: {summary.Stock}");
+    //         }
+    //         if (allStockedItems.Count > 5)
+    //             Console.WriteLine($"   ... ve {allStockedItems.Count - 5} ürün daha");
+    //     }
+
+    //     return allStockedItems;
+    // }
     public async Task<List<Dictionary<string, object>>?> GetAllStockedItemsAsync()
     {
         var token = await GetValidToken();
@@ -1333,7 +1685,12 @@ public class ExactService
         int skip = 0;
         var allStockedItems = new List<Dictionary<string, object>>();
         int retryCount = 0;
-        const int maxRetries = 3;
+        const int maxRetries = 1000;
+
+        // 📊 İstatistik sayaçları
+        int totalItemsFromApi = 0;
+        int bundleItemsCount = 0;
+        int nonBundleItemsCount = 0;
 
         Console.WriteLine("📦 Tüm webshop ürünleri alınıyor ve stok kontrolü yapılıyor...");
 
@@ -1342,7 +1699,7 @@ public class ExactService
             try
             {
                 var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/Items?$filter=IsWebshopItem eq 1&$top={top}&$skip={skip}";
-                Console.WriteLine($"📡 API çağrısı: Sayfa {skip / top + 1}");
+                Console.WriteLine($"📡 API çağrısı: Sayfa {skip / top + 1} (Skip: {skip}, Top: {top})");
 
                 var resp = await client.GetAsync(url);
 
@@ -1414,6 +1771,9 @@ public class ExactService
                         };
                     }
 
+                    // 📊 API'den gelen ürün sayısını artır
+                    totalItemsFromApi++;
+
                     // Stok kontrolü - verdiğiniz test kodundaki mantık
                     bool hasStock = false;
                     double stockValue = 0;
@@ -1436,20 +1796,39 @@ public class ExactService
                         }
                     }
 
-                    // Sadece stoku olan ürünleri listeye ekle
+                    // ✅ Sadece stoku olan ürünleri kontrol et
                     if (hasStock)
                     {
-                        allStockedItems.Add(dict);
-                        stockedInPage++;
-                        Console.WriteLine($"   ✅ Stoklu ürün eklendi: {dict.GetValueOrDefault("Code", "N/A")} (Stok: {stockValue})");
-                    }
+                        string itemId = dict.GetValueOrDefault("ID", "").ToString();
+                        bool isBundle = await GetItemExtraFieldAsync(itemId);
+                        if (isBundle)
+                        {
+                            bundleItemsCount++;
+                            Console.WriteLine($"   🚫 Bundle ürünü atlandı: {dict.GetValueOrDefault("Code", "N/A")} (ID: {itemId})");
+                            continue; // Bundle ürünü listeye ekleme
 
+                        }
+                        else
+                        {
+                            nonBundleItemsCount++;
+                            allStockedItems.Add(dict);
+
+                        }
+                    }
+                    stockedInPage++;
+                    Console.WriteLine($"   ✅ Stoklu ürün eklendi: {dict.GetValueOrDefault("Code", "N/A")} (Stok: {stockValue})");
                     countInPage++;
                 }
 
                 Console.WriteLine($"📦 Sayfa {skip / top + 1}: {countInPage} ürün alındı, {stockedInPage} stoklu ürün bulundu. Toplam stoklu: {allStockedItems.Count}");
 
-                if (countInPage < top) break; // Son sayfa
+                // 🔑 ÖNEMLI FIX: Eğer hiç ürün gelmemişse, tüm ürünler alınmış demektir
+                if (countInPage == 0)
+                {
+                    Console.WriteLine("✅ Tüm sayfalar alındı (boş sayfa bulundu)");
+                    break;
+                }
+
                 skip += top;
 
                 // API rate limiting
@@ -1479,7 +1858,17 @@ public class ExactService
             }
         }
 
-        Console.WriteLine($"✅ Toplam {allStockedItems.Count} stoklu ürün başarıyla alındı");
+        Console.WriteLine($"✅ Toplam {allStockedItems.Count} stoklu ve bundle olmayan ürün başarıyla alındı");
+
+        // 📊 DETAYLI İSTATİSTİK RAPORU
+        Console.WriteLine("\n" + new string('=', 60));
+        Console.WriteLine("📊 API İSTATİSTİK RAPORU");
+        Console.WriteLine(new string('=', 60));
+        Console.WriteLine($"📦 API'den gelen toplam ürün sayısı: {totalItemsFromApi}");
+        Console.WriteLine($"🚫 Bundle ürün sayısı: {bundleItemsCount}");
+        Console.WriteLine($"✅ Bundle olmayan ürün sayısı: {nonBundleItemsCount}");
+        Console.WriteLine($"💾 Kaydedilen stoklu ürün sayısı: {allStockedItems.Count}");
+        Console.WriteLine(new string('=', 60) + "\n");
 
         // Stok bilgilerinin özetini göster
         if (allStockedItems.Any())
@@ -1695,6 +2084,22 @@ public class ExactService
             Console.WriteLine($"❌ Webhook Error: {response.StatusCode}");
             Console.WriteLine($"📄 Full Response: {error}");
             Console.WriteLine($"🔗 Request URL: {response.RequestMessage?.RequestUri}");
+            string logDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data");
+            string logFilePath = Path.Combine(logDirectory, $"webhook_error_{DateTime.Now:yyyy-MM-dd}.log");
+
+            if (!Directory.Exists(logDirectory))
+                Directory.CreateDirectory(logDirectory);
+
+            string errorMessage = $"""
+            [{DateTime.Now:yyyy-MM-dd HH:mm:ss}] WEBHOOK HATA
+            Status: {response.StatusCode}
+            URL: {response.RequestMessage?.RequestUri}
+            Body: {error}
+            Headers: {string.Join(", ", response.Headers)}
+            
+            """;
+
+            File.AppendAllText(logFilePath, errorMessage);
             return false;
         }
 
@@ -1753,7 +2158,7 @@ public class ExactService
     }
 
 
-    public async Task<List<Account>> GetAllCustomersAsync()
+   public async Task<List<Account>> GetAllCustomersAsync()
     {
         var token = await GetValidToken();
         if (token == null)
@@ -1770,6 +2175,7 @@ public class ExactService
         try
         {
             var allCustomers = new List<Account>();
+            var errorEmails = new List<string>(); // ❌ Hata alan emailler
             int skip = 0;
             int top = 60;
             bool hasMore = true;
@@ -1788,7 +2194,9 @@ public class ExactService
 
             while (hasMore)
             {
-                var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?(Type eq 'C' or Type eq 'S')$top={top}&$skip={skip}";
+               var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Status eq 'C' and EndDate eq null&$top={top}&$skip={skip}";
+                
+
                 Console.WriteLine($"📥 Sayfa alınıyor - Skip: {skip}, Toplam: {allCustomers.Count}");
 
                 var response = await client.GetAsync(url);
@@ -1835,19 +2243,58 @@ public class ExactService
                 int count = 0;
                 int errorCount = 0;
 
+                // API'den gelen gerçek kayıt sayısını al
+                int totalFromApi = resultsArray.EnumerateArray().Count();
+
                 foreach (var customerElement in resultsArray.EnumerateArray())
                 {
+                    Account account = null; // ✅ Try bloğunun dışında tanımla
+                     var customerJson = customerElement.GetRawText();
                     try
                     {
-                        var customerJson = customerElement.GetRawText();
+                       
 
                         // Her customer için de temizlik yap
                         customerJson = PreProcessJson(customerJson);
 
-                        var account = JsonSerializer.Deserialize<Account>(customerJson, jsonOptions);
+                        account = JsonSerializer.Deserialize<Account>(customerJson, jsonOptions);
 
                         if (account != null)
                         {
+                            // Ek güvenlik: EndDate kontrol et (null değilse ve geçmiş tarihse atla)
+                            if (account.EndDate != null && account.EndDate < DateTime.Now)
+                            {
+                                Console.WriteLine($"⏳ Müşteri {account.Code} inaktif (EndDate: {account.EndDate}), atlaniyor");
+                                continue;
+                            }
+
+                            if (account.Classification1 != null)
+                            {
+                                Console.WriteLine($"📊 Müşteri Sınıflandırması: {account.Classification1}");
+                                var searcClassification = $"{_baseUrl}/api/v1/{_divisionCode}/crm/AccountClassifications?$filter=ID eq guid'{account.Classification1}'";
+
+
+
+                                var responseClassification = await client.GetAsync(searcClassification);
+                                await Task.Delay(1000);
+                                if (!responseClassification.IsSuccessStatusCode)
+                                {
+                                    Console.WriteLine($"❌ API hatası: {responseClassification.StatusCode}");
+                                    var errorContent = await responseClassification.Content.ReadAsStringAsync();
+                                    Console.WriteLine($"Hata detayı: {errorContent}");
+                                    continue;
+                                }
+                                else
+                                {
+                                    var contentClassification = await responseClassification.Content.ReadAsStringAsync();
+                                    var classificationDoc = JsonDocument.Parse(contentClassification);
+                                    var codeClassification = classificationDoc.RootElement.GetProperty("d").GetProperty("results")[0].GetProperty("Code").GetString();
+                                    if (codeClassification != null)
+                                    {
+                                        account.ClassificationDescription = codeClassification;
+                                    }
+                                }
+                            }
                             allCustomers.Add(account);
                             count++;
                         }
@@ -1855,6 +2302,21 @@ public class ExactService
                     catch (JsonException jsonEx)
                     {
                         errorCount++;
+                        
+                        // Deserialize hatası sırasında email'i JSON string'inden çıkar
+                        try
+                        {
+                            var errorDoc = JsonDocument.Parse(customerJson);
+                            if (errorDoc.RootElement.TryGetProperty("email", out var emailProp))
+                            {
+                                var email = emailProp.GetString();
+                                if (!string.IsNullOrWhiteSpace(email))
+                                    errorEmails.Add(email);
+                                Console.WriteLine($"⚠️ JSON parse hatası - Email: {email}");
+                            }
+                        }
+                        catch { }
+                        
                         Console.WriteLine($"⚠️ JSON parse hatası ({errorCount}): {jsonEx.Message}");
 
                         if (errorCount == 1)
@@ -1865,20 +2327,36 @@ public class ExactService
                     catch (Exception ex)
                     {
                         errorCount++;
+                        
+                        // Genel hata sırasında da email'i çıkar
+                        try
+                        {
+                            var errorDoc = JsonDocument.Parse(customerJson);
+                            if (errorDoc.RootElement.TryGetProperty("email", out var emailProp))
+                            {
+                                var email = emailProp.GetString();
+                                if (!string.IsNullOrWhiteSpace(email))
+                                    errorEmails.Add(email);
+                                Console.WriteLine($"⚠️ Genel hata - Email: {email}");
+                            }
+                        }
+                        catch { }
+                        
                         Console.WriteLine($"⚠️ Genel hata: {ex.Message}");
                     }
                 }
 
                 if (errorCount > 0)
                 {
-                    Console.WriteLine($"⚠️ {count} başarılı, {errorCount} hatalı kayıt");
+                    Console.WriteLine($"⚠️ {count} başarılı, {errorCount} hatalı kayıt (API'den {totalFromApi} kayıt geldi)");
                 }
                 else
                 {
                     Console.WriteLine($"✅ {count} müşteri başarıyla alındı");
                 }
 
-                if (count < top)
+                // API'den gelen kayıt sayısını kontrol et (parse hatası olanları göz ardı et)
+                if (totalFromApi < top)
                 {
                     hasMore = false;
                     Console.WriteLine("🏁 Son sayfaya ulaşıldı");
@@ -1888,10 +2366,23 @@ public class ExactService
                     skip += top;
                 }
 
-                await Task.Delay(200);
+                await Task.Delay(1500);
             }
 
             Console.WriteLine($"🎯 TOPLAM: {allCustomers.Count} müşteri başarıyla alındı");
+            
+            // ❌ Hata alan emailleri JSON dosyasına yaz
+            if (errorEmails.Count > 0)
+            {
+                var errorJson = System.Text.Json.JsonSerializer.Serialize(new { 
+                    errorCount = errorEmails.Count, 
+                    emails = errorEmails.Distinct().ToList() 
+                }, new JsonSerializerOptions { WriteIndented = true });
+                
+                File.WriteAllText("error_emails.json", errorJson);
+                Console.WriteLine($"📋 {errorEmails.Count} hata alan email 'error_emails.json' dosyasına kaydedildi");
+            }
+            
             return allCustomers;
         }
         catch (Exception ex)
@@ -2365,6 +2856,90 @@ public class ExactService
     }
 
 
+    //son 24 saatte eklenen müşteriler
+    public async Task<List<string>> GetRecentCustomerEmailsAsync(int hours = 24)
+    {
+        try
+        {
+            var token = await GetValidToken();
+            if (token == null)
+            {
+                _logger.LogError("Token alınamadı");
+                return new List<string>();
+            }
+
+            // Son X saatteki tarih
+            var cutoffDate = DateTime.UtcNow.AddHours(-hours);
+            var dateFilter = cutoffDate.ToString("yyyy-MM-ddTHH:mm:ss");
+
+            int top = 60;
+            int skip = 0;
+            var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Created ge datetime'{dateFilter}'&$top={top}&$skip={skip}&$select=Email,Name,Created";
+
+            _logger.LogInformation("📡 Son {Hours} saatte oluşturulan müşteriler getiriliyor...", hours);
+            _logger.LogInformation("🔗 API URL: {Url}", url);
+            _logger.LogInformation("📅 Cutoff Date (UTC): {Date}", cutoffDate);
+
+            using var client = new HttpClient();
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", token.access_token);
+            client.DefaultRequestHeaders.Accept.Add(
+                new MediaTypeWithQualityHeaderValue("application/json"));
+
+            var response = await client.GetAsync(url);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                _logger.LogError("❌ Müşteriler getirilemedi: {Status} - {Error}",
+                    response.StatusCode, error);
+                return new List<string>();
+            }
+
+            var jsonContent = await response.Content.ReadAsStringAsync();
+            var jsonDoc = JsonDocument.Parse(jsonContent);
+
+            var emails = new List<string>();
+
+            // Exact Online'ın format: { "d": [ {...}, {...} ] }
+            if (jsonDoc.RootElement.TryGetProperty("d", out var dataArray))
+            {
+                foreach (var customer in dataArray.EnumerateArray())
+                {
+                    // Email'i al
+                    if (customer.TryGetProperty("Email", out var emailProp))
+                    {
+                        var email = emailProp.GetString();
+                        if (!string.IsNullOrWhiteSpace(email))
+                        {
+                            emails.Add(email);
+
+                            // Debug için
+                            if (customer.TryGetProperty("Name", out var nameProp))
+                            {
+                                _logger.LogInformation("✅ Yeni müşteri: {Name} - {Email}",
+                                    nameProp.GetString(), email);
+                            }
+                        }
+                    }
+                }
+
+                _logger.LogInformation("📧 Toplam {Count} email adresi bulundu", emails.Count);
+            }
+            else
+            {
+                _logger.LogWarning("⚠️ API yanıtında 'd' property'si bulunamadı");
+            }
+
+            return emails;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Email'leri getirirken hata: {Error}", ex.Message);
+            return new List<string>();
+        }
+    }
+
 
     //get customer by email
     public async Task<Account> GetCustomerByEmailAsync(string email)
@@ -2471,6 +3046,33 @@ public class ExactService
 
             if (account != null)
             {
+                if (account.Classification1 != null)
+                {
+                    Console.WriteLine($"📊 Müşteri Sınıflandırması: {account.Classification1}");
+                    var searcClassification = $"{_baseUrl}/api/v1/{_divisionCode}/crm/AccountClassifications?$filter=ID eq guid'{account.Classification1}'";
+
+                    Console.WriteLine($"🔍 Email araniyor: {email}");
+
+                    var responseClassification = await client.GetAsync(searcClassification);
+
+                    if (!responseClassification.IsSuccessStatusCode)
+                    {
+                        Console.WriteLine($"❌ API hatası: {responseClassification.StatusCode}");
+                        var errorContent = await responseClassification.Content.ReadAsStringAsync();
+                        Console.WriteLine($"Hata detayı: {errorContent}");
+                        return null;
+                    }
+                    else
+                    {
+                        var contentClassification = await responseClassification.Content.ReadAsStringAsync();
+                        var classificationDoc = JsonDocument.Parse(contentClassification);
+                        var codeClassification = classificationDoc.RootElement.GetProperty("d").GetProperty("results")[0].GetProperty("Code").GetString();
+                        if (codeClassification != null)
+                        {
+                            account.ClassificationDescription = codeClassification;
+                        }
+                    }
+                }
                 Console.WriteLine($"✅ Müşteri bulundu: {account.Name} (ID: {account.ID})");
             }
 
@@ -3034,8 +3636,9 @@ public class ExactService
             return DateTime.MinValue;
         }
     }
-
 }
+
+
 
 
 
