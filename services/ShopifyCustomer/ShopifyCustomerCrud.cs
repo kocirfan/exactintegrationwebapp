@@ -16,8 +16,9 @@ public class ShopifyCustomerCrud
     private readonly HttpClient _client;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly string _shopifyStoreUrl;
+    private readonly ShopifyGraphQLService _graphqlService;
 
-    public ShopifyCustomerCrud(string shopifyStoreUrl, string accessToken)
+    public ShopifyCustomerCrud(string shopifyStoreUrl, string accessToken, ShopifyGraphQLService graphqlService)
     {
         _shopifyStoreUrl = shopifyStoreUrl.TrimEnd('/');
         _client = new HttpClient
@@ -32,6 +33,7 @@ public class ShopifyCustomerCrud
             PropertyNameCaseInsensitive = true,
             WriteIndented = true
         };
+        _graphqlService = graphqlService;
     }
 
     // --> Webhook için tek bir müşteri güncelleme metodu
@@ -40,12 +42,22 @@ public class ShopifyCustomerCrud
     {
         try
         {
+
             var emailLower = exactAccount.Email.ToLower();
             var emailExists = await CustomerFindByEmail(exactAccount.Email);
             if (emailExists == null)
             {
-                await CreateCustomerEmailAsync(exactAccount, "b2b-customer", logFilePath, sendWelcomeEmail);
-                Console.WriteLine($"⚠️ Müşteri bulunamadı Shopify'da: {exactAccount.Email}, yeni müşteri oluşturuldu.");
+                var customerCode = await _graphqlService.SearchCustomerByMetafieldCodeAsync(customerCode: exactAccount.Code.Trim());
+                if (customerCode == null)
+                {
+                    await CreateCustomerEmailAsync(exactAccount, "b2b-customer", logFilePath, sendWelcomeEmail);
+                    Console.WriteLine($"⚠️ Müşteri bulunamadı Shopify'da: {exactAccount.Email}, yeni müşteri oluşturuldu.");
+                }
+                else
+                {
+                    emailExists = customerCode.Id.ToString();
+                }
+
                 //return false;
             }
             string customerId = emailExists;
@@ -81,21 +93,21 @@ public class ShopifyCustomerCrud
                     {
                     new
                     {
-                        @namespace = "exact_online",
+                        @namespace = "custom",
                         key = "customer_id",
                         value = exactAccount.ID.ToString(),
                         type = "single_line_text_field"
                     },
                     new
                     {
-                        @namespace = "exact_online",
+                        @namespace = "custom",
                         key = "customer_code",
                         value = exactAccount.Code?.Trim() ?? "",
                         type = "single_line_text_field"
                     },
                     new
                     {
-                        @namespace = "exact_online",
+                        @namespace = "custom",
                         key = "last_synced",
                         value = DateTimeOffset.Now.ToString("O"),
                         type = "single_line_text_field"
@@ -151,21 +163,21 @@ public class ShopifyCustomerCrud
                             {
                             new
                             {
-                                @namespace = "exact_online",
+                                @namespace = "custom",
                                 key = "customer_id",
                                 value = exactAccount.ID.ToString(),
                                 type = "single_line_text_field"
                             },
                             new
                             {
-                                @namespace = "exact_online",
+                                @namespace = "custom",
                                 key = "customer_code",
                                 value = exactAccount.Code?.Trim() ?? "",
                                 type = "single_line_text_field"
                             },
                             new
                             {
-                                @namespace = "exact_online",
+                                @namespace = "custom",
                                 key = "last_synced",
                                 value = DateTimeOffset.Now.ToString("O"),
                                 type = "single_line_text_field"
@@ -216,6 +228,13 @@ public class ShopifyCustomerCrud
     // --> Webhook için tek müşteri kayıt
     public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string customerTag = "b2b-customer", string logFilePath = null, bool sendWelcomeEmail = true)
     {
+        //var testcustomer = await _graphqlService.SearchCustomerByMetafieldCodeAsync(exactAccount.Code.Trim());
+        var customerCode = await _graphqlService.SearchCustomerByMetafieldCodeAsync(customerCode: exactAccount.Code.Trim());
+        if (customerCode != null)
+        {
+            Console.WriteLine($"⚠️ Müşteri zaten mevcut Shopify'da: {exactAccount.Email}, oluşturma atlandı.");
+            return false;
+        }
         try
         {
 
@@ -264,6 +283,13 @@ public class ShopifyCustomerCrud
                     new
                     {
                         @namespace = "exact_online",
+                        key = "customer_code",
+                        value = exactAccount.Code?.Trim() ?? "",
+                        type = "single_line_text_field"
+                    },
+                    new
+                    {
+                        @namespace = "custom",
                         key = "customer_code",
                         value = exactAccount.Code?.Trim() ?? "",
                         type = "single_line_text_field"
@@ -321,7 +347,7 @@ public class ShopifyCustomerCrud
                 // Console.WriteLine($"❌ Müşteri oluşturma başarısız - Status: {response.StatusCode}");
                 // Console.WriteLine($"Hata: {responseContent}");
                 // return false;
-                 if (responseContent.Contains("phone"))
+                if (responseContent.Contains("phone"))
                 {
                     Console.WriteLine($"❌ Müşteri oluşturma başarısız - Geçersiz telefon numarası: {validatedPhone} için, telefon numarası boş bırakılıyor.");
                     //Telefonu boşalt ve tekrar dene
@@ -362,6 +388,13 @@ public class ShopifyCustomerCrud
                                 @namespace = "exact_online",
                                 key = "customer_id",
                                 value = exactAccount.ID.ToString(),
+                                type = "single_line_text_field"
+                            },
+                            new
+                            {
+                                @namespace = "custom",
+                                key = "customer_code",
+                                value = exactAccount.Code?.Trim() ?? "",
                                 type = "single_line_text_field"
                             },
                             new
@@ -548,10 +581,19 @@ public class ShopifyCustomerCrud
 
         // Sadece rakamları al
         var digitsOnly = System.Text.RegularExpressions.Regex.Replace(phoneNumber, @"[^\d]", "");
-
-        if (digitsOnly.Length < 5 || digitsOnly.Length > 17)
+        string cleaned = phoneNumber.Trim();
+        if (digitsOnly.Length < 5)
         {
             return "";
+        }
+        else if (!cleaned.StartsWith("0") && digitsOnly.Length < 5)
+        {
+            return "0" + digitsOnly;
+        }
+        else if (digitsOnly.Length > 17)
+        {
+            digitsOnly = digitsOnly.Substring(1, 12);
+            return digitsOnly;
         }
         else
         {

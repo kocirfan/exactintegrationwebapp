@@ -68,7 +68,7 @@ builder.Services.AddScoped<ExactCustomerCrud>(serviceProvider =>
     var tokenManager = serviceProvider.GetRequiredService<ITokenManager>();
     var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
     var logger = loggerFactory.CreateLogger<ExactCustomerCrud>();
-    
+
 
     var exactSection = configuration.GetSection("ExactOnline");
 
@@ -109,7 +109,8 @@ builder.Services.AddScoped<ShopifyCustomerCrud>(serviceProvider =>
 
     return new ShopifyCustomerCrud(
         shopifyStoreUrl: shopifySection["StoreUrl"] ?? throw new InvalidOperationException("Shopify:StoreUrl is missing"),
-        accessToken: shopifySection["AccessToken"] ?? throw new InvalidOperationException("Shopify:AccessToken is missing")
+        accessToken: shopifySection["AccessToken"] ?? throw new InvalidOperationException("Shopify:AccessToken is missing"),
+        graphqlService: serviceProvider.GetRequiredService<ShopifyGraphQLService>()
     );
 });
 
@@ -124,7 +125,9 @@ builder.Services.AddSingleton<AppConfiguration>();
 
 // Thread-Safe Background Services
 builder.Services.AddHostedService<StockSyncBackgroundService>();        // Stok sync (günlük 09:30)
+                                                                        //bu eklendi classification kontrolü içim
 builder.Services.AddHostedService<UpdateExactCustomerJob>();
+//bunlar artık yok
 //builder.Services.AddHostedService<NewProductCreationService>();
 //builder.Services.AddHostedService<ProductPriceAndTitleUpdate>(); 
 

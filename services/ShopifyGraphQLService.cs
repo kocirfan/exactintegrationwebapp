@@ -14,22 +14,22 @@ public class ShopifyGraphQLService
     private readonly HttpClient _client;
     private readonly string _graphqlEndpoint;
     private readonly IConfiguration _config;
-    
+
     public ShopifyGraphQLService(IHttpClientFactory httpClientFactory, IConfiguration config)
     {
         _config = config;
         var storeUrl = _config["Shopify:StoreUrl"];
         var accessToken = _config["Shopify:AccessToken"];
-        
+
         _client = httpClientFactory.CreateClient();
         _client.BaseAddress = new Uri(storeUrl);
         _client.DefaultRequestHeaders.Add("X-Shopify-Access-Token", accessToken);
-        
+
         _graphqlEndpoint = "admin/api/2024-01/graphql.json";
     }
 
     public async Task<List<ShopifyProduct>> GetAllProductsAsync(
-        int batchSize = 250, 
+        int batchSize = 250,
         int? maxProducts = null)
     {
         if (batchSize > 250) batchSize = 250;
@@ -70,27 +70,27 @@ public class ShopifyGraphQLService
                 retryCount = 0;
 
                 var jsonResponse = await response.Content.ReadAsStringAsync();
-                
+
                 // FULL RESPONSE'U LOGLA
                 Console.WriteLine("═══════════════════════════════════════════════");
                 Console.WriteLine($"📄 FULL GraphQL Response (Sayfa {pageCount}):");
                 Console.WriteLine(jsonResponse);
                 Console.WriteLine("═══════════════════════════════════════════════");
-                
+
                 using var document = JsonDocument.Parse(jsonResponse);
 
                 // GraphQL hatalarını kontrol et - THROTTLED özel durumu
                 if (document.RootElement.TryGetProperty("errors", out var errors))
                 {
                     var errorsList = errors.EnumerateArray().ToList();
-                    
+
                     // Throttled hatası mı?
-                    var throttledError = errorsList.FirstOrDefault(e => 
+                    var throttledError = errorsList.FirstOrDefault(e =>
                         e.TryGetProperty("extensions", out var ext) &&
                         ext.TryGetProperty("code", out var code) &&
                         code.GetString() == "THROTTLED"
                     );
-                    
+
                     if (throttledError.ValueKind != JsonValueKind.Undefined)
                     {
                         if (retryCount < maxRetries)
@@ -107,14 +107,14 @@ public class ShopifyGraphQLService
                             throw new Exception($"GraphQL throttled ve {maxRetries} deneme başarısız");
                         }
                     }
-                    
+
                     // Diğer hatalar
                     Console.WriteLine("❌ GraphQL Hataları:");
                     foreach (var error in errorsList)
                     {
                         var message = error.GetProperty("message").GetString();
                         Console.WriteLine($"   - {message}");
-                        
+
                         if (error.TryGetProperty("extensions", out var ext))
                         {
                             Console.WriteLine($"   Extensions: {ext.GetRawText()}");
@@ -178,10 +178,12 @@ public class ShopifyGraphQLService
         return allProducts;
     }
 
+
+
     private string BuildProductQuery(int first, string cursor)
     {
         var afterClause = string.IsNullOrEmpty(cursor) ? "" : $", after: \"{cursor}\"";
-        
+
         // DÜZELTİLMİŞ QUERY - Sorunlu fieldlar kaldırıldı/düzeltildi
         return $@"
         {{
@@ -357,7 +359,7 @@ public class ShopifyGraphQLService
             {
                 variant.InventoryItemId = ParseLegacyResourceId(invItem, "legacyResourceId");
             }
-            
+
             // Tracked field'ından inventory management'ı çıkar
             if (invItem.TryGetProperty("tracked", out var tracked) && tracked.GetBoolean())
             {
@@ -498,7 +500,7 @@ public class ShopifyGraphQLService
         {
             Console.WriteLine($"   ⚠️ SmartDelay hatası (ignore): {ex.Message}");
         }
-        
+
         // Varsayılan minimal bekleme
         await Task.Delay(500);
     }
@@ -515,9 +517,9 @@ public class ShopifyGraphQLService
 
     private string GetStringOrNull(JsonElement element, string propertyName)
     {
-        return element.TryGetProperty(propertyName, out var prop) && 
-               prop.ValueKind != JsonValueKind.Null 
-            ? prop.GetString() 
+        return element.TryGetProperty(propertyName, out var prop) &&
+               prop.ValueKind != JsonValueKind.Null
+            ? prop.GetString()
             : null;
     }
 
@@ -533,7 +535,7 @@ public class ShopifyGraphQLService
         {
             if (prop.ValueKind == JsonValueKind.Number)
                 return prop.GetDecimal();
-            if (prop.ValueKind == JsonValueKind.String && 
+            if (prop.ValueKind == JsonValueKind.String &&
                 decimal.TryParse(prop.GetString(), out var result))
                 return result;
         }
@@ -542,7 +544,7 @@ public class ShopifyGraphQLService
 
     private int? GetIntOrNull(JsonElement element, string propertyName)
     {
-        if (element.TryGetProperty(propertyName, out var prop) && 
+        if (element.TryGetProperty(propertyName, out var prop) &&
             prop.ValueKind == JsonValueKind.Number)
             return prop.GetInt32();
         return null;
@@ -556,7 +558,7 @@ public class ShopifyGraphQLService
             // Number ise direkt al
             if (prop.ValueKind == JsonValueKind.Number)
                 return prop.GetInt64();
-            
+
             // String ise parse et
             if (prop.ValueKind == JsonValueKind.String)
             {
@@ -567,88 +569,733 @@ public class ShopifyGraphQLService
         }
         return 0;
     }
-}
 
-// ============================================
-// 2. Program.cs'e ekleyin (Dependency Injection)
-// ============================================
-/*
-// HttpClientFactory ekleyin
-builder.Services.AddHttpClient();
+    // ============================================
+    // ShopifyGraphQLService.cs içine ekleyin
+    // ============================================
 
-// ShopifyGraphQLService'i ekleyin
-builder.Services.AddScoped<ShopifyGraphQLService>();
-*/
-
-// ============================================
-// 3. Controller'ınızı güncelleyin
-// ============================================
-/*
-[ApiController]
-[Route("api/[controller]")]
-public class ShopifyController : ControllerBase
-{
-    private readonly ShopifyGraphQLService _graphqlService;
-    private readonly IConfiguration _config;
-
-    public ShopifyController(ShopifyGraphQLService graphqlService, IConfiguration config)
+    /// <summary>
+    /// GraphQL ile tüm müşterileri paginate ederek çeker
+    /// </summary>
+    public async Task<List<ShopifyCustomer>> GetAllCustomersAsync(
+        int batchSize = 250,
+        int? maxCustomers = null)
     {
-        _graphqlService = graphqlService;
-        _config = config;
+        if (batchSize > 250) batchSize = 250;
+        if (batchSize < 1) batchSize = 250;
+
+        var allCustomers = new List<ShopifyCustomer>();
+        string cursor = null;
+        bool hasNextPage = true;
+        int pageCount = 0;
+        int retryCount = 0;
+        const int maxRetries = 3;
+
+        Console.WriteLine($"🛍️ GraphQL ile müşteriler getiriliyor (sayfa başına {batchSize} müşteri)...");
+
+        while (hasNextPage)
+        {
+            pageCount++;
+            var query = BuildCustomerQuery(batchSize, cursor);
+
+            try
+            {
+                var response = await ExecuteGraphQLAsync(query);
+
+                if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    if (retryCount < maxRetries)
+                    {
+                        retryCount++;
+                        var retryAfter = GetRetryAfterSeconds(response);
+                        Console.WriteLine($"⏳ Rate limit! {retryAfter}sn bekleniyor... ({retryCount}/{maxRetries})");
+                        await Task.Delay(retryAfter * 1000);
+                        continue;
+                    }
+                    throw new Exception($"Rate limit aşıldı ({maxRetries} deneme)");
+                }
+
+                response.EnsureSuccessStatusCode();
+                retryCount = 0;
+
+                var jsonResponse = await response.Content.ReadAsStringAsync();
+
+                // FULL RESPONSE'U LOGLA
+                Console.WriteLine("═══════════════════════════════════════════════");
+                Console.WriteLine($"📄 FULL GraphQL Response (Sayfa {pageCount}):");
+                Console.WriteLine(jsonResponse);
+                Console.WriteLine("═══════════════════════════════════════════════");
+
+                using var document = JsonDocument.Parse(jsonResponse);
+
+                // GraphQL hatalarını kontrol et - THROTTLED özel durumu
+                if (document.RootElement.TryGetProperty("errors", out var errors))
+                {
+                    var errorsList = errors.EnumerateArray().ToList();
+
+                    // Throttled hatası mı?
+                    var throttledError = errorsList.FirstOrDefault(e =>
+                        e.TryGetProperty("extensions", out var ext) &&
+                        ext.TryGetProperty("code", out var code) &&
+                        code.GetString() == "THROTTLED"
+                    );
+
+                    if (throttledError.ValueKind != JsonValueKind.Undefined)
+                    {
+                        if (retryCount < maxRetries)
+                        {
+                            retryCount++;
+                            Console.WriteLine($"⏳ GraphQL Throttled! 5 saniye bekleniyor... ({retryCount}/{maxRetries})");
+                            await Task.Delay(5000);
+                            pageCount--;
+                            continue;
+                        }
+                        else
+                        {
+                            Console.WriteLine($"❌ Maximum retry sayısına ulaşıldı ({maxRetries})");
+                            throw new Exception($"GraphQL throttled ve {maxRetries} deneme başarısız");
+                        }
+                    }
+
+                    // Diğer hatalar
+                    Console.WriteLine("❌ GraphQL Hataları:");
+                    foreach (var error in errorsList)
+                    {
+                        var message = error.GetProperty("message").GetString();
+                        Console.WriteLine($"   - {message}");
+
+                        if (error.TryGetProperty("extensions", out var ext))
+                        {
+                            Console.WriteLine($"   Extensions: {ext.GetRawText()}");
+                        }
+                    }
+                    throw new Exception($"GraphQL Error: {errors.GetRawText()}");
+                }
+
+                if (!document.RootElement.TryGetProperty("data", out var data))
+                {
+                    Console.WriteLine("❌ GraphQL response'da 'data' yok");
+                    Console.WriteLine($"Response keys: {string.Join(", ", document.RootElement.EnumerateObject().Select(p => p.Name))}");
+                    break;
+                }
+
+                CheckThrottleStatus(document);
+
+                var customers = data.GetProperty("customers");
+                var edges = customers.GetProperty("edges");
+                var pageInfo = customers.GetProperty("pageInfo");
+
+                int pageCustomerCount = 0;
+                foreach (var edge in edges.EnumerateArray())
+                {
+                    var node = edge.GetProperty("node");
+                    var customer = ConvertToShopifyCustomer(node);
+                    allCustomers.Add(customer);
+                    pageCustomerCount++;
+
+                    if (maxCustomers.HasValue && allCustomers.Count >= maxCustomers.Value)
+                    {
+                        Console.WriteLine($"✅ Maksimum müşteri sayısına ulaşıldı: {maxCustomers.Value}");
+                        return allCustomers.Take(maxCustomers.Value).ToList();
+                    }
+                }
+
+                Console.WriteLine($"📄 Sayfa {pageCount}: {pageCustomerCount} müşteri alındı. Toplam: {allCustomers.Count}");
+
+                hasNextPage = pageInfo.GetProperty("hasNextPage").GetBoolean();
+                if (hasNextPage)
+                {
+                    cursor = edges.EnumerateArray().Last()
+                        .GetProperty("cursor").GetString();
+                    Console.WriteLine($"   ➡️ Sonraki sayfa cursor: {cursor?.Substring(0, Math.Min(20, cursor.Length))}...");
+                }
+                else
+                {
+                    Console.WriteLine("   🏁 Son sayfaya ulaşıldı");
+                }
+
+                await SmartDelayAsync(document);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Sayfa {pageCount} hatası: {ex.Message}");
+                throw;
+            }
+        }
+
+        Console.WriteLine($"✅ Toplam {allCustomers.Count} müşteri {pageCount} sayfada alındı");
+        return allCustomers;
     }
 
-    [HttpGet("shopify-items")]
-    public async Task<IActionResult> GetShopifyItems()
+    /// <summary>
+    /// Müşteri verileri için GraphQL query oluşturur
+    /// </summary>
+    private string BuildCustomerQuery(int first, string cursor)
     {
+        var afterClause = string.IsNullOrEmpty(cursor) ? "" : $", after: \"{cursor}\"";
+
+        return $@"
+    {{
+      customers(first: {first}{afterClause}) {{
+        edges {{
+          cursor
+          node {{
+            id
+            legacyResourceId
+            firstName
+            lastName
+            email
+            phone
+            state
+            tags
+            createdAt
+            updatedAt
+            defaultAddress {{
+              id
+              firstName
+              lastName
+              address1
+              address2
+              city
+              zip
+              country
+              countryCode
+              province
+              provinceCode
+            }}
+            metafields(first: 100) {{
+              edges {{
+                node {{
+                  id
+                  namespace
+                  key
+                  value
+                  type
+                }}
+              }}
+            }}
+          }}
+        }}
+        pageInfo {{
+          hasNextPage
+          hasPreviousPage
+        }}
+      }}
+    }}";
+    }
+
+    /// <summary>
+    /// GraphQL customer node'unu ShopifyCustomer objesine dönüştürür
+    /// </summary>
+    private ShopifyCustomer ConvertToShopifyCustomer(JsonElement node)
+    {
+        var customer = new ShopifyCustomer
+        {
+            Id = ParseLegacyResourceId(node, "legacyResourceId"),
+            FirstName = GetStringOrNull(node, "firstName"),
+            LastName = GetStringOrNull(node, "lastName"),
+            Email = GetStringOrNull(node, "email"),
+            Metafields = new List<ShopifyMetafield>()
+        };
+
+        // Default Address
+        if (node.TryGetProperty("defaultAddress", out var defaultAddr) &&
+            defaultAddr.ValueKind != JsonValueKind.Null)
+        {
+            customer.DefaultAddress = ConvertToShopifyAddress(defaultAddr);
+        }
+
+        // Tüm adresler
+        var addresses = new List<ShopifyAddress>();
+        if (node.TryGetProperty("addresses", out var addressesNode))
+        {
+            foreach (var edge in addressesNode.GetProperty("edges").EnumerateArray())
+            {
+                var addrNode = edge.GetProperty("node");
+                addresses.Add(ConvertToShopifyAddress(addrNode));
+            }
+        }
+
+        // Metafields
+        if (node.TryGetProperty("metafields", out var metafields))
+        {
+            foreach (var edge in metafields.GetProperty("edges").EnumerateArray())
+            {
+                var mfNode = edge.GetProperty("node");
+                customer.Metafields.Add(ConvertToShopifyMetafield(mfNode));
+            }
+        }
+
+        return customer;
+    }
+
+    /// <summary>
+    /// GraphQL address node'unu ShopifyAddress objesine dönüştürür
+    /// </summary>
+    private ShopifyAddress ConvertToShopifyAddress(JsonElement node)
+    {
+        return new ShopifyAddress
+        {
+            FirstName = GetStringOrNull(node, "firstName"),
+            LastName = GetStringOrNull(node, "lastName"),
+            Address1 = GetStringOrNull(node, "address1"),
+            Address2 = GetStringOrNull(node, "address2"),
+            City = GetStringOrNull(node, "city"),
+            Zip = GetStringOrNull(node, "zip"),
+            Country = GetStringOrNull(node, "country"),
+            CountryCode = GetStringOrNull(node, "countryCode")
+        };
+    }
+
+    /// <summary>
+    /// GraphQL metafield node'unu ShopifyMetafield objesine dönüştürür
+    /// </summary>
+    private ShopifyMetafield ConvertToShopifyMetafield(JsonElement node)
+    {
+        return new ShopifyMetafield
+        {
+            Id = GetStringOrNull(node, "id"),
+            Namespace = GetStringOrNull(node, "namespace"),
+            Key = GetStringOrNull(node, "key"),
+            Value = GetStringOrNull(node, "value"),
+            Type = GetStringOrNull(node, "type")
+        };
+    }
+
+
+    public async Task<ShopifyCustomer> SearchCustomerByEmailOrCodeAsync(
+    string email = null,
+    string customerCode = null)
+    {
+        if (string.IsNullOrWhiteSpace(email) && string.IsNullOrWhiteSpace(customerCode))
+        {
+            Console.WriteLine("❌ Email veya Customer Code parametrelerinden en az biri gereklidir");
+            return null;
+        }
+
         try
         {
-            Console.WriteLine("🛍️ Shopify ürünleri getiriliyor (GraphQL)...");
-
-            // GraphQL ile tüm ürünleri çek
-            var products = await _graphqlService.GetAllProductsAsync(batchSize: 250);
-
-            if (products == null || products.Count == 0)
+            // 1. ADIM: Email ile ara (varsa direkt döndür)
+            if (!string.IsNullOrWhiteSpace(email))
             {
-                Console.WriteLine("❌ Shopify ürünleri alınamadı");
-                return Problem("Ürünler alınamadı veya token geçersiz.");
+                Console.WriteLine($"🔍 Email ile aranıyor: {email}");
+                var customerByEmail = await SearchCustomerByEmailAsync(email);
+
+                if (customerByEmail != null)
+                {
+                    Console.WriteLine($"✅ Müşteri email ile bulundu!");
+                    Console.WriteLine($"   ID: {customerByEmail.Id}");
+                    Console.WriteLine($"   Ad: {customerByEmail.FirstName} {customerByEmail.LastName}");
+                    return customerByEmail;
+                }
+
+                Console.WriteLine($"⚠️ Email ile müşteri bulunamadı: {email}");
             }
 
-            foreach (var product in products)
+            // 2. ADIM: Customer Code ile ara
+            if (!string.IsNullOrWhiteSpace(customerCode))
             {
-                Console.WriteLine($"Ürün: {product.Id} - {product.Title} ({product.Vendor})");
+                Console.WriteLine($"🔍 Customer Code ile aranıyor: {customerCode}");
+                var customerByCode = await SearchCustomerByMetafieldCodeAsync(customerCode);
+
+                if (customerByCode != null)
+                {
+                    Console.WriteLine($"✅ Müşteri code ile bulundu!");
+                    Console.WriteLine($"   ID: {customerByCode.Id}");
+                    Console.WriteLine($"   Ad: {customerByCode.FirstName} {customerByCode.LastName}");
+                    Console.WriteLine($"   Email: {customerByCode.Email}");
+                    return customerByCode;
+                }
+
+                Console.WriteLine($"⚠️ Customer Code ile müşteri bulunamadı: {customerCode}");
             }
 
-            Console.WriteLine($"✅ {products.Count} ürün alındı");
-            return Ok(products);
+            Console.WriteLine("❌ Hiçbir müşteri bulunamadı");
+            return null;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ Hata: {ex.Message}");
-            return StatusCode(500, $"Bir hata oluştu: {ex.Message}");
+            Console.WriteLine($"❌ Müşteri arama hatası: {ex.Message}");
+            throw;
         }
     }
 
-    // İsteğe bağlı: Limit parametresiyle
-    [HttpGet("shopify-items-limited")]
-    public async Task<IActionResult> GetShopifyItemsLimited([FromQuery] int limit = 100)
+    /// <summary>
+    /// Email ile müşteri arar (GraphQL)
+    /// </summary>
+    private async Task<ShopifyCustomer> SearchCustomerByEmailAsync(string email)
     {
+        var query = $@"
+    {{
+      customers(first: 1, query: ""email:{email}"") {{
+        edges {{
+          node {{
+            id
+            legacyResourceId
+            firstName
+            lastName
+            email
+            phone
+            state
+            tags
+            createdAt
+            updatedAt
+            defaultAddress {{
+              id
+              firstName
+              lastName
+              address1
+              address2
+              city
+              zip
+              country
+              countryCode
+              province
+              provinceCode
+            }}
+            metafields(first: 100) {{
+              edges {{
+                node {{
+                  id
+                  namespace
+                  key
+                  value
+                  type
+                }}
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}";
+
         try
         {
-            Console.WriteLine($"🛍️ İlk {limit} Shopify ürünü getiriliyor (GraphQL)...");
+            var response = await ExecuteGraphQLAsync(query);
+            response.EnsureSuccessStatusCode();
 
-            var products = await _graphqlService.GetAllProductsAsync(
-                batchSize: 250, 
-                maxProducts: limit
-            );
+            var jsonResponse = await response.Content.ReadAsStringAsync();
+            using var document = JsonDocument.Parse(jsonResponse);
 
-            Console.WriteLine($"✅ {products.Count} ürün alındı");
-            return Ok(products);
+            if (!document.RootElement.TryGetProperty("data", out var data))
+            {
+                return null;
+            }
+
+            var customers = data.GetProperty("customers");
+            var edges = customers.GetProperty("edges").EnumerateArray().ToList();
+
+            if (edges.Count == 0)
+            {
+                return null;
+            }
+
+            var node = edges[0].GetProperty("node");
+            return ConvertToShopifyCustomer(node);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ Hata: {ex.Message}");
-            return StatusCode(500, $"Bir hata oluştu: {ex.Message}");
+            Console.WriteLine($"❌ Email arama hatası: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Metafield Code ile müşteri arar
+    /// "exact_online.customer_code" veya "custom.customer_code" içinde arar
+    /// </summary>
+    /// 
+    public async Task<ShopifyCustomer> SearchCustomerByMetafieldCodeAsync(string customerCode)
+    {
+        if (string.IsNullOrWhiteSpace(customerCode))
+        {
+            Console.WriteLine("❌ Customer Code boş olamaz");
+            return null;
+        }
+
+        // İki namespace'i deneyeceğiz
+        string[] namespaces = { "exact_online", "custom" };
+
+        foreach (var ns in namespaces)
+        {
+            Console.WriteLine($"   └─ Namespace '{ns}' kontrol ediliyor...");
+
+            string cursor = null;
+            bool hasNextPage = true;
+            int pageCount = 0;
+
+            while (hasNextPage)
+            {
+                pageCount++;
+                var afterClause = string.IsNullOrEmpty(cursor) ? "" : $", after: \"{cursor}\"";
+
+                var query = $@"
+            {{
+              customers(first: 250{afterClause}) {{
+                edges {{
+                  cursor
+                  node {{
+                    id
+                    legacyResourceId
+                    firstName
+                    lastName
+                    email
+                    phone
+                    state
+                    tags
+                    createdAt
+                    updatedAt
+                    defaultAddress {{
+                      id
+                      firstName
+                      lastName
+                      address1
+                      address2
+                      city
+                      zip
+                      country
+                      countryCode
+                      province
+                      provinceCode
+                    }}
+                    metafields(first: 100, namespace: ""{ns}"") {{
+                      edges {{
+                        node {{
+                          id
+                          namespace
+                          key
+                          value
+                          type
+                        }}
+                      }}
+                    }}
+                  }}
+                }}
+                pageInfo {{
+                  hasNextPage
+                  hasPreviousPage
+                }}
+              }}
+            }}";
+
+                try
+                {
+                    var response = await ExecuteGraphQLAsync(query);
+                    response.EnsureSuccessStatusCode();
+
+                    var jsonResponse = await response.Content.ReadAsStringAsync();
+                    using var document = JsonDocument.Parse(jsonResponse);
+
+                    // GraphQL hatalarını kontrol et
+                    if (document.RootElement.TryGetProperty("errors", out var errors))
+                    {
+                        var errorList = errors.EnumerateArray().ToList();
+                        Console.WriteLine($"   └─ ⚠️ GraphQL Hatası: {errorList.FirstOrDefault().GetProperty("message").GetString()}");
+                        break;
+                    }
+
+                    if (!document.RootElement.TryGetProperty("data", out var data))
+                    {
+                        Console.WriteLine($"   └─ ⚠️ Response'da 'data' bulunamadı");
+                        break;
+                    }
+
+                    var customers = data.GetProperty("customers");
+                    var edges = customers.GetProperty("edges").EnumerateArray().ToList();
+
+                    Console.WriteLine($"   └─ Sayfa {pageCount}: {edges.Count} müşteri kontrol ediliyor...");
+
+                    // Tüm müşterileri kontrol et
+                    foreach (var edge in edges)
+                    {
+                        var node = edge.GetProperty("node");
+                        var foundCustomer = await CheckCustomerMetafieldAsync(node, ns, customerCode);
+
+                        if (foundCustomer != null)
+                        {
+                            Console.WriteLine($"   └─ ✅ Eşleşme bulundu! ({ns}.customer_code = {customerCode})");
+                            return foundCustomer;
+                        }
+                    }
+
+                    // Sonraki sayfa var mı kontrol et
+                    var pageInfo = customers.GetProperty("pageInfo");
+                    hasNextPage = pageInfo.GetProperty("hasNextPage").GetBoolean();
+
+                    if (hasNextPage)
+                    {
+                        cursor = edges.Last().GetProperty("cursor").GetString();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"   └─ ⚠️ Namespace '{ns}' Sayfa {pageCount} hatası: {ex.Message}");
+                    break;
+                }
+
+                // Rate limit için delay
+                await SmartDelayAsync(null);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Tek bir müşterinin metafield'larını kontrol eder
+    /// </summary>
+    private async Task<ShopifyCustomer> CheckCustomerMetafieldAsync(JsonElement node, string targetNamespace, string targetCode)
+    {
+        try
+        {
+            // Metafield'ları kontrol et
+            if (node.TryGetProperty("metafields", out var metafields))
+            {
+                var metafieldEdges = metafields.GetProperty("edges").EnumerateArray();
+
+                foreach (var mfEdge in metafieldEdges)
+                {
+                    var mfNode = mfEdge.GetProperty("node");
+
+                    var key = GetStringOrNull(mfNode, "key");
+                    var value = GetStringOrNull(mfNode, "value");
+                    var mfNamespace = GetStringOrNull(mfNode, "namespace");
+
+                    // KRITIK KONTROL: Namespace, Key ve Value'nin hepsinin eşleşmesi gerekir
+                    if (mfNamespace == targetNamespace &&
+                        key == "customer_code" &&
+                        value == targetCode)
+                    {
+                        // Eşleşme bulundu!
+                        return ConvertToShopifyCustomer(node);
+                    }
+                }
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"   └─ ⚠️ Metafield kontrol hatası: {ex.Message}");
+            return null;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BONUS: Tüm Code'ları Listele (Debug İçin)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Tüm müşterilerin metafield customer_code'larını listeler (DEBUG)
+    /// </summary>
+    public async Task DebugListAllCustomerCodesAsync()
+    {
+        Console.WriteLine("\n🔍 TÜM MÜŞTERİ KODLARI LİSTELENİYOR...\n");
+
+        string[] namespaces = { "exact_online", "custom" };
+
+        foreach (var ns in namespaces)
+        {
+            Console.WriteLine($"📌 Namespace: {ns}");
+            Console.WriteLine("─────────────────────────────────────────");
+
+            string cursor = null;
+            bool hasNextPage = true;
+            int pageCount = 0;
+            int totalFound = 0;
+
+            while (hasNextPage)
+            {
+                pageCount++;
+                var afterClause = string.IsNullOrEmpty(cursor) ? "" : $", after: \"{cursor}\"";
+
+                var query = $@"
+            {{
+              customers(first: 250{afterClause}) {{
+                edges {{
+                  cursor
+                  node {{
+                    id
+                    email
+                    firstName
+                    lastName
+                    metafields(first: 100, namespace: ""{ns}"") {{
+                      edges {{
+                        node {{
+                          namespace
+                          key
+                          value
+                        }}
+                      }}
+                    }}
+                  }}
+                }}
+                pageInfo {{
+                  hasNextPage
+                }}
+              }}
+            }}";
+
+                try
+                {
+                    var response = await ExecuteGraphQLAsync(query);
+                    response.EnsureSuccessStatusCode();
+
+                    var jsonResponse = await response.Content.ReadAsStringAsync();
+                    using var document = JsonDocument.Parse(jsonResponse);
+
+                    if (!document.RootElement.TryGetProperty("data", out var data))
+                        break;
+
+                    var customers = data.GetProperty("customers");
+                    var edges = customers.GetProperty("edges").EnumerateArray().ToList();
+
+                    foreach (var edge in edges)
+                    {
+                        var node = edge.GetProperty("node");
+                        var email = GetStringOrNull(node, "email");
+                        var firstName = GetStringOrNull(node, "firstName");
+                        var lastName = GetStringOrNull(node, "lastName");
+
+                        if (node.TryGetProperty("metafields", out var metafields))
+                        {
+                            var mfEdges = metafields.GetProperty("edges").EnumerateArray();
+
+                            foreach (var mfEdge in mfEdges)
+                            {
+                                var mfNode = mfEdge.GetProperty("node");
+                                var key = GetStringOrNull(mfNode, "key");
+                                var value = GetStringOrNull(mfNode, "value");
+                                var mfNamespace = GetStringOrNull(mfNode, "namespace");
+
+                                if (key == "customer_code")
+                                {
+                                    Console.WriteLine($"   ✅ {firstName} {lastName} ({email})");
+                                    Console.WriteLine($"      └─ {mfNamespace}.customer_code = {value}");
+                                    totalFound++;
+                                }
+                            }
+                        }
+                    }
+
+                    var pageInfo = customers.GetProperty("pageInfo");
+                    hasNextPage = pageInfo.GetProperty("hasNextPage").GetBoolean();
+
+                    if (hasNextPage)
+                    {
+                        cursor = edges.Last().GetProperty("cursor").GetString();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"   ⚠️ Sayfa {pageCount} hatası: {ex.Message}");
+                    break;
+                }
+
+                await SmartDelayAsync(null);
+            }
+
+            Console.WriteLine($"📊 {ns} namespace'inde {totalFound} kod bulundu\n");
         }
     }
 }
-*/

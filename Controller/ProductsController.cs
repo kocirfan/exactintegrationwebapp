@@ -584,8 +584,9 @@ namespace ShopifyProductApp.Controllers
             }
 
             // ✅ Cache'den veya API'den müşterileri al
-            var allCustomer = await GetCustomersWithCacheAsync();
-            //var allCustomer = await _exactService.GetCustomerByEmailAsync(email);
+            //var allCustomer = await GetCustomersWithCacheAsync();
+            //var allCustomer = await _exactService.GetAllCustomersAsync();
+            var customer = await _exactService.GetCustomerByEmailAsync(email);
 
             // if (allCustomer == null || allCustomer.Count == 0)
             // {
@@ -596,11 +597,15 @@ namespace ShopifyProductApp.Controllers
             int successCount = 0;
             int failureCount = 0;
             var logFilePath = Path.Combine("logs", $"customer-sync-{DateTime.Now:yyyyMMdd}.log");
-            foreach (var customer in allCustomer)
-            {
-                 try
+            // foreach (var customer in allCustomer)
+            // {
+                 
+
+            
+            // }
+            try
                 {
-                    var shopifyResult = await _shopifyService.CreateCustomerAsync(
+                    var shopifyResult = await _shopifyCustomerService.UpdateCustomerAsync(
                         customer,
                         logFilePath,
                         sendWelcomeEmail: false
@@ -641,9 +646,6 @@ namespace ShopifyProductApp.Controllers
                     });
                     Console.WriteLine($"❌ Hata: {customer.Email} - {ex.Message}");
                 }
-
-            
-            }
             return Ok(new
             {
                 message = "Tüm müşteriler işlendi",
@@ -942,6 +944,48 @@ namespace ShopifyProductApp.Controllers
             var orders = await _exactService.GetRecentOrdersRawJsonAsync();
             return Ok(orders);
         }
+
+
+        ////
+     [HttpGet("shopify-customers")]
+public async Task<IActionResult> GetShopifyCustomers()
+{
+    try
+    {
+        Console.WriteLine("👥 Shopify müşterileri getiriliyor (GraphQL)...");
+
+        // GraphQL ile tüm müşterileri çek
+        //var customers = await _graphqlService.GetAllCustomersAsync(batchSize: 250);
+        var testcustomer = await _graphqlService.SearchCustomerByEmailOrCodeAsync(customerCode: "1301311");
+        if (testcustomer != null)
+        {
+            Console.WriteLine($"✅ Test Müşteri Bulundu: {testcustomer.Id} - {testcustomer.Email}");
+        }
+        else
+        {
+            Console.WriteLine("❌ Test Müşteri Bulunamadı");
+        }
+
+        // if (customers == null || customers.Count == 0)
+        // {
+        //     Console.WriteLine("❌ Shopify müşterileri alınamadı");
+        //     return Problem("Müşteriler alınamadı veya token geçersiz.");
+        // }
+
+        // foreach (var customer in customers)
+        // {
+        //     Console.WriteLine($"Müşteri: {customer.Id} - {customer.FirstName} {customer.LastName} ({customer.Email})");
+        // }
+
+        //Console.WriteLine($"✅ {customers.Count} müşteri alındı");
+        return Ok(testcustomer);
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"❌ Hata: {ex.Message}");
+        return StatusCode(500, $"Bir hata oluştu: {ex.Message}");
+    }
+}
     }
 
     // ✅ Cache veri modeli

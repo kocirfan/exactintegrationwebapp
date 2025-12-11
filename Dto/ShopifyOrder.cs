@@ -139,8 +139,17 @@ public class ShopifyCustomer
 
     [JsonPropertyName("default_address")]
     public ShopifyAddress DefaultAddress { get; set; }
-}
 
+    public List<ShopifyMetafield> Metafields { get; set; }
+}
+public class ShopifyMetafield
+{
+    public string Id { get; set; }
+    public string Namespace { get; set; }
+    public string Key { get; set; }
+    public string Value { get; set; }
+    public string Type { get; set; }
+}
 public class ShopifyAddress
 {
     [JsonPropertyName("first_name")]
