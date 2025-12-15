@@ -1265,7 +1265,7 @@ public class ExactService
         new AuthenticationHeaderValue("Bearer", token.access_token);
     client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-    var yesterday = DateTime.UtcNow.AddDays(-2);
+    var yesterday = DateTime.UtcNow.AddDays(-1);
     var dateFilter = yesterday.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
 
     int top = 60;

@@ -4,6 +4,7 @@ using ShopifyProductApp.Models;
 using Microsoft.Extensions.Caching.Memory;
 using ShopifyProductApp.Data;
 using Microsoft.EntityFrameworkCore;
+using System.Reflection;
 
 
 namespace ShopifyProductApp.Controllers
@@ -15,20 +16,26 @@ namespace ShopifyProductApp.Controllers
         private readonly ExactService _exactService;
         private readonly ILogger<ShopifyWebhookController> _logger;
         private readonly IConfiguration _configuration;
+
+        private readonly ExactAddressCrud _exactAddressCrud;
         private readonly IMemoryCache _cache;
         private readonly ApplicationDbContext _dbContext; // ← Ekle
+        private readonly AddressMatchingService _addressMatchingService;
 
 
         public ShopifyWebhookController(
             ExactService exactService,
             ILogger<ShopifyWebhookController> logger,
-            IConfiguration configuration, IMemoryCache cache, ApplicationDbContext dbContext)
+            ExactAddressCrud exactAddressCrud,
+            IConfiguration configuration, IMemoryCache cache, ApplicationDbContext dbContext, AddressMatchingService addressMatchingService)
         {
             _exactService = exactService;
             _logger = logger;
             _configuration = configuration;
+            _exactAddressCrud = exactAddressCrud;
             _cache = cache;
             _dbContext = dbContext;
+            _addressMatchingService = addressMatchingService;
         }
 
         [HttpPost("order-created")]
@@ -61,6 +68,8 @@ namespace ShopifyProductApp.Controllers
                     }
 
                     _logger.LogInformation($"🆕 YENİ sipariş işleniyor: {shopifyOrder.Id}");
+
+
 
                     // ExactOnline'a gönder
                     var success = await ProcessShopifyOrderToExact(shopifyOrder);
@@ -168,13 +177,6 @@ namespace ShopifyProductApp.Controllers
                             ? ((unitPrice - unitPriceWithDiscount) / unitPrice) * 100
                             : 0;
 
-                        _logger.LogInformation($"📊 Ürün: {lineItem.Sku}");
-                        _logger.LogInformation($"   UnitPrice (Orijinal): {unitPrice:F2}€");
-                        _logger.LogInformation($"   NetPrice (İndirimli): {unitPriceWithDiscount:F2}€");
-                        _logger.LogInformation($"   Discount: {discountPercentage:F2}%");
-                        _logger.LogInformation($"   Quantity: {lineItem.Quantity}");
-                        _logger.LogInformation($"   VATPercentage: {vatPercentage * 100}%");
-
                         salesOrderLines.Add(new ExactOrderLine
                         {
                             ID = Guid.NewGuid(),
@@ -230,16 +232,84 @@ namespace ShopifyProductApp.Controllers
                 {
                     warehouseGuid = wh;
                 }
+                //ExactAddress matchingBillingAddress = null;
+                // ExactAddress matchingShippingAddress = null;
+                ///Guid? deliveryAddressId = matchingShippingAddress?.Id;
+                Guid invoiceAddressId = Guid.Empty;
+                //adress kontrol
+                bool addressesDiffer = IsBillingAddressDifferentFromShippingAddress(shopifyOrder);
+                if (addressesDiffer)
+                {
+                    var billing = shopifyOrder.BillingAddress;
+                    var customerBillingAddress = _exactAddressCrud.GetCustomerBillingAddresses(customerId.Value.ToString());
+                    if (customerBillingAddress.Result.Count > 0)
+                    {
+                        bool addressFound = false;
+                        foreach (var address in customerBillingAddress.Result)
+                        {
+                            _logger.LogInformation($"   🔍 Exact'teki fatura adresi: {address.AddressLine1}, {address.PostalCode} {address.City}");
+
+                            if (address.FullAddress == billing.Address1 + ", " + billing.Zip + ", " + billing.City)
+                            {
+                                
+                                address.IsMain = true;
+                                await _exactAddressCrud.UpdateAddress(address.Id.ToString(), address);
+                                _logger.LogInformation("   ✅ Exact'teki fatura adresi Shopify fatura adresi ile eşleşiyor.");
+                                addressFound = true;
+                                break;
+                            }
+
+                        }
+                        if (!addressFound)
+                        {
+                            // Hiçbir adres eşleşmediyse yeni adres oluştur
+                            await CreateNewBillingAddress(billing, customerId.Value.ToString());
+                        }
+                        else
+                        {
+                            _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te bulundu ve kullanılacak.");
+                        }
+
+
+                        _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te bulundu ve kullanılacak.");
+                    }
+                    else
+                    {
+                        // // Fatura adresi Exact'te yoksa oluştur
+                        ExactAddress newBillingAddress = new ExactAddress
+                        {
+                            AccountId = Guid.Parse(customerId.Value.ToString()),
+                            Type = 3, // 3 = Fatura Adresi
+                            AddressLine1 = billing.Address1 ?? "",
+                            AddressLine2 = billing.Address2 ?? "",
+                            City = billing.City ?? "",
+                            PostalCode = billing.Zip ?? "",
+                            IsMain = true,
+                            CountryCode = billing.CountryCode ?? "",
+                            AccountName = $"{billing.FirstName} {billing.LastName}" ?? "",
+                            Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
+                        };
+
+                        var createdAddress = await _exactAddressCrud.CreateAddress(newBillingAddress);
+                        if (createdAddress != null)
+                        {
+                            _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te oluşturuldu ve kullanılacak.");
+                        }
+                        else
+                        {
+                            _logger.LogWarning("   ⚠️ Müşterinin fatura adresi oluşturulamadı.");
+                        }
+                         //await CreateNewBillingAddress(billing, customerId.Value.ToString());
+                    }
+
+                }
+
+
+
+
+                _logger.LogInformation($"📄 Sipariş açıklaması adresleri ile oluşturuluyor...");
 
                 DateTime orderDate = DateTime.Now;
-
-                _logger.LogInformation($" Sipariş tarihi: {orderDate:yyyy-MM-dd HH:mm:ss}");
-                _logger.LogInformation($" Finansal Özet:");
-                _logger.LogInformation($"   Toplam (İndirim öncesi): {totalLineItemsPrice}€");
-                _logger.LogInformation($"   Toplam İndirim: {currentTotalDiscounts}€");
-                _logger.LogInformation($"   Ara Toplam (KDV dahil): {currentSubtotalPrice}€");
-                _logger.LogInformation($"   KDV Tutarı: {currentTotalTax}€");
-
                 //shiping method ekle
                 //13 --> f4b84d79-3796-4fdc-a24e-08cd7628ce82
                 // Mağazadan teslim  02 --> 19eb5f3e-7131-4d48-8a38-5b66eb44aa5b
@@ -249,12 +319,6 @@ namespace ShopifyProductApp.Controllers
                     var shippingLine = shopifyOrder.ShippingLines.FirstOrDefault();
                     bool hasVerzendkosten = shippingLine?.Title?.Contains("Verzendkosten") ?? false;
                     bool hasShippingAddress = shopifyOrder.ShippingAddress != null;
-
-                    _logger.LogInformation($"🚚 Shipping Kontrol:");
-                    _logger.LogInformation($"   Verzendkosten içeriyor: {hasVerzendkosten}");
-                    _logger.LogInformation($"   Gönderim Adresi Belirtilmiş: {hasShippingAddress}");
-                    _logger.LogInformation($"   Shipping Title: {shippingLine?.Title ?? "null"}");
-
                     if (hasVerzendkosten && hasShippingAddress)
                     {
                         shippingMethodGuid = Guid.Parse("f4b84d79-3796-4fdc-a24e-08cd7628ce82"); // Kargo
@@ -304,6 +368,92 @@ namespace ShopifyProductApp.Controllers
                 _logger.LogError($"Stack trace: {ex.StackTrace}");
                 return false;
             }
+        }
+
+        //adress kontorl
+        private bool IsBillingAddressDifferentFromShippingAddress(ShopifyOrder shopifyOrder)
+        {
+            // Eğer teslimat adresi yoksa varsayılan olarak aynı kabul et
+            if (shopifyOrder.ShippingAddress == null)
+            {
+                _logger.LogInformation("ℹ️ Teslimat adresi bulunamadı, aynı kabul edildi");
+                return false;
+            }
+
+            // Eğer fatura adresi yoksa varsayılan olarak aynı kabul et
+            if (shopifyOrder.BillingAddress == null)
+            {
+                _logger.LogInformation("ℹ️ Fatura adresi bulunamadı, aynı kabul edildi");
+                return false;
+            }
+
+            var billing = shopifyOrder.BillingAddress;
+            var shipping = shopifyOrder.ShippingAddress;
+
+            // Karşılaştırma (büyük/küçük harfe duyarsız, boşluk kontrollü)
+            bool addressesDiffer =
+                !NormalizeString(billing.Address1).Equals(NormalizeString(shipping.Address1)) ||
+                !NormalizeString(billing.Address2).Equals(NormalizeString(shipping.Address2)) ||
+                !NormalizeString(billing.City).Equals(NormalizeString(shipping.City)) ||
+                !NormalizeString(billing.Zip).Equals(NormalizeString(shipping.Zip)) ||
+                !NormalizeString(billing.Country).Equals(NormalizeString(shipping.Country)) ||
+                !NormalizeString(billing.FirstName).Equals(NormalizeString(shipping.FirstName)) ||
+                !NormalizeString(billing.LastName).Equals(NormalizeString(shipping.LastName));
+
+            if (addressesDiffer)
+            {
+                _logger.LogWarning("⚠️ FATURA VE TESLİMAT ADRESLERİ FARKI:");
+                _logger.LogWarning($"   Fatura: {billing.FirstName} {billing.LastName}");
+                _logger.LogWarning($"           {billing.Address1} {billing.Address2}");
+                _logger.LogWarning($"           {billing.Zip} {billing.City}, {billing.Country}");
+                _logger.LogWarning($"   Teslimat: {shipping.FirstName} {shipping.LastName}");
+                _logger.LogWarning($"             {shipping.Address1} {shipping.Address2}");
+                _logger.LogWarning($"             {shipping.Zip} {shipping.City}, {shipping.Country}");
+            }
+            else
+            {
+                _logger.LogInformation("✅ Fatura ve teslimat adresleri aynı");
+            }
+
+            return addressesDiffer;
+        }
+
+        private async Task CreateNewBillingAddress(ShopifyAddress billing, String customerId)
+        {
+            ExactAddress newBillingAddress = new ExactAddress
+            {
+                AccountId = Guid.Parse(customerId),
+                Type = 3,
+                AddressLine1 = billing.Address1 ?? "",
+                AddressLine2 = billing.Address2 ?? "",
+                City = billing.City ?? "",
+                PostalCode = billing.Zip ?? "",
+                IsMain = true,
+                CountryCode = billing.CountryCode ?? "",
+                AccountName = $"{billing.FirstName} {billing.LastName}" ?? "",
+                Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
+            };
+
+            var createdAddress = await _exactAddressCrud.CreateAddress(newBillingAddress);
+            if (createdAddress != null)
+            {
+                _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te oluşturuldu ve kullanılacak.");
+            }
+            else
+            {
+                _logger.LogWarning("   ⚠️ Müşterinin fatura adresi oluşturulamadı.");
+            }
+        }
+
+        /// <summary>
+        /// String'i normalize et (boşlukları kaldır, küçük harfe çevir)
+        /// </summary>
+        private string NormalizeString(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return string.Empty;
+
+            return input.Trim().ToLowerInvariant();
         }
 
 

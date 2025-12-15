@@ -16,6 +16,7 @@ namespace ShopifyProductApp.Controllers
         private readonly ShopifyService _shopifyService;
         private readonly ShopifyCustomerCrud _shopifyCustomerService;
         private readonly ShopifyGraphQLService _graphqlService;
+private readonly ExactAddressCrud _exactAddressCrud;
         private readonly AppConfiguration _config;
         private readonly ILogger<ProductsController> _logger;
         private readonly IConfiguration _configg;
@@ -25,13 +26,20 @@ namespace ShopifyProductApp.Controllers
         private const int CACHE_VALIDITY_HOURS = 24;
 
 
-        public ProductsController(ShopifyGraphQLService graphqlService, ExactService exactService, ExactCustomerCrud exactCustomerService,  ShopifyService shopifyService, ShopifyCustomerCrud shopifyCustomerCrud, AppConfiguration config, ILogger<ProductsController> logger, IConfiguration configg)
+        public ProductsController(ShopifyGraphQLService graphqlService, 
+        ExactService exactService, 
+        ExactCustomerCrud exactCustomerService,  
+        ShopifyService shopifyService, 
+        ShopifyCustomerCrud shopifyCustomerCrud,
+        ExactAddressCrud exactAddressCrud,
+         AppConfiguration config, ILogger<ProductsController> logger, IConfiguration configg)
         {
             _graphqlService = graphqlService;
             _exactService = exactService;
             _exactCustomerService = exactCustomerService;
             _shopifyService = shopifyService;
             _shopifyCustomerService = shopifyCustomerCrud;
+            _exactAddressCrud = exactAddressCrud;
             _config = config;
             _logger = logger;
             _configg = configg;
@@ -587,74 +595,76 @@ namespace ShopifyProductApp.Controllers
             //var allCustomer = await GetCustomersWithCacheAsync();
             //var allCustomer = await _exactService.GetAllCustomersAsync();
             var customer = await _exactService.GetCustomerByEmailAsync(email);
+            var addresses = await _exactAddressCrud.GetCustomerAddresses(customer.ID.ToString());
+            var shopifyCustomer = await _shopifyCustomerService.CustomerFindByEmail(email);
 
             // if (allCustomer == null || allCustomer.Count == 0)
             // {
             //     return NotFound(new { message = "Müşteri bulunamadı" });
             // }
 
-            var results = new List<object>();
-            int successCount = 0;
-            int failureCount = 0;
-            var logFilePath = Path.Combine("logs", $"customer-sync-{DateTime.Now:yyyyMMdd}.log");
-            // foreach (var customer in allCustomer)
-            // {
+            // var results = new List<object>();
+            // int successCount = 0;
+            // int failureCount = 0;
+            // var logFilePath = Path.Combine("logs", $"customer-sync-{DateTime.Now:yyyyMMdd}.log");
+            // // foreach (var customer in allCustomer)
+            // // {
                  
 
             
-            // }
-            try
-                {
-                    var shopifyResult = await _shopifyCustomerService.UpdateCustomerAsync(
-                        customer,
-                        logFilePath,
-                        sendWelcomeEmail: false
-                    );
+            // // }
+            // try
+            //     {
+            //         var shopifyResult = await _shopifyCustomerService.UpdateCustomerAsync(
+            //             customer,
+            //             logFilePath,
+            //             sendWelcomeEmail: false
+            //         );
 
-                    if (shopifyResult)
-                    {
-                        successCount++;
-                        results.Add(new
-                        {
-                            email = customer.Email,
-                            status = "✅ Başarılı",
-                            name = customer.Name
-                        });
-                        Console.WriteLine($"✅ Müşteri aktarıldı: {customer.Email}");
-                    }
-                    else
-                    {
-                        failureCount++;
-                        results.Add(new
-                        {
-                            email = customer.Email,
-                            status = "⚠️ Zaten mevcut veya hata",
-                            name = customer.Name
-                        });
-                        Console.WriteLine($"⚠️ Müşteri oluşturulamadı: {customer.Email}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    failureCount++;
-                    results.Add(new
-                    {
-                        email = customer.Email,
-                        status = "❌ Hata",
-                        error = ex.Message,
-                        name = customer.Name
-                    });
-                    Console.WriteLine($"❌ Hata: {customer.Email} - {ex.Message}");
-                }
+            //         if (shopifyResult)
+            //         {
+            //             successCount++;
+            //             results.Add(new
+            //             {
+            //                 email = customer.Email,
+            //                 status = "✅ Başarılı",
+            //                 name = customer.Name
+            //             });
+            //             Console.WriteLine($"✅ Müşteri aktarıldı: {customer.Email}");
+            //         }
+            //         else
+            //         {
+            //             failureCount++;
+            //             results.Add(new
+            //             {
+            //                 email = customer.Email,
+            //                 status = "⚠️ Zaten mevcut veya hata",
+            //                 name = customer.Name
+            //             });
+            //             Console.WriteLine($"⚠️ Müşteri oluşturulamadı: {customer.Email}");
+            //         }
+            //     }
+            //     catch (Exception ex)
+            //     {
+            //         failureCount++;
+            //         results.Add(new
+            //         {
+            //             email = customer.Email,
+            //             status = "❌ Hata",
+            //             error = ex.Message,
+            //             name = customer.Name
+            //         });
+            //         Console.WriteLine($"❌ Hata: {customer.Email} - {ex.Message}");
+            //     }
             return Ok(new
             {
                 message = "Tüm müşteriler işlendi",
                 //totalProcessed = allCustomer.Count,
-                successCount = successCount,
-                failureCount = failureCount,
-                logFile = logFilePath,
+                // successCount = successCount,
+                // failureCount = failureCount,
+                // logFile = logFilePath,
                 cacheUsed = await IsCacheValidAsync(),
-                details = results
+                 details = shopifyCustomer
             });
           
         }

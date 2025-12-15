@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
 using ExactOnline.Models;
+using System.Text.Json.Serialization;
 
 namespace ShopifyProductApp.Services;
 
@@ -17,8 +18,10 @@ public class ShopifyCustomerCrud
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly string _shopifyStoreUrl;
     private readonly ShopifyGraphQLService _graphqlService;
+     private readonly ILogger<ShopifyCustomerCrud> _logger;
+      private readonly IServiceProvider _serviceProvider;
 
-    public ShopifyCustomerCrud(string shopifyStoreUrl, string accessToken, ShopifyGraphQLService graphqlService)
+    public ShopifyCustomerCrud(string shopifyStoreUrl, string accessToken, ShopifyGraphQLService graphqlService,ILogger<ShopifyCustomerCrud> logger, IServiceProvider serviceProvider)
     {
         _shopifyStoreUrl = shopifyStoreUrl.TrimEnd('/');
         _client = new HttpClient
@@ -34,6 +37,8 @@ public class ShopifyCustomerCrud
             WriteIndented = true
         };
         _graphqlService = graphqlService;
+         _logger = logger;
+          _serviceProvider = serviceProvider;
     }
 
     // --> Webhook için tek bir müşteri güncelleme metodu
@@ -713,7 +718,7 @@ public class ShopifyCustomerCrud
     }
 
 
-    private async Task<string> CustomerFindByEmail(string email)
+    public async Task<string> CustomerFindByEmail(string email)
     {
         try
         {
@@ -836,6 +841,270 @@ public class ShopifyCustomerCrud
         var finalLogJson = JsonSerializer.Serialize(allLogs, _jsonOptions);
         await File.WriteAllTextAsync(logFilePath, finalLogJson);
     }
+
+
+    //  public async Task<bool> SyncCustomerAddressesFromExact(string email)
+    //     {
+    //         try
+    //         {
+    //             _logger.LogInformation($"📧 Müşteri senkronizasyonu başlıyor: {email}");
+
+    //             // 1. Shopify'da müşteriyi bul
+    //             var shopifyCustomerId = await CustomerFindByEmailNew(email);
+    //             if (string.IsNullOrEmpty(shopifyCustomerId.Id.ToString()))
+    //             {
+    //                 _logger.LogWarning($"❌ Shopify'da müşteri bulunamadı: {email}");
+    //                 return false;
+    //             }
+
+    //             _logger.LogInformation($"✅ Shopify müşterisi bulundu: {shopifyCustomerId}");
+
+    //             // 2. Shopify'dan müşteri ID'sini al (tam ID gerekli)
+                
+
+    //             // 3. Exact'tan adresler listesini çek
+    //             var exactService = _serviceProvider.GetRequiredService<ExactService>();
+    //             var exactAddressService = _serviceProvider.GetRequiredService<ExactAddressCrud>();
+    //             var exactAddresses = await exactAddressService.GetCustomerAddresses(shopifyCustomerId.ExactCustomerId);
+                
+    //             if (exactAddresses == null || exactAddresses.Count == 0)
+    //             {
+    //                 _logger.LogWarning($"❌ Exact'ta adres bulunamadı");
+    //                 return false;
+    //             }
+
+    //             _logger.LogInformation($"✅ Exact'tan {exactAddresses.Count} adres alındı");
+
+    //             // 4. Metafield'ları oluştur (varsa güncelle)
+    //             await CreateOrUpdateAddressMetafields();
+
+    //             // 5. Her bir adresi Shopify'a ekle
+    //             var successCount = 0;
+    //             foreach (var exactAddress in exactAddresses)
+    //             {
+    //                 var result = await AddAddressToShopifyCustomer(
+    //                     shopifyCustomerId.Id.ToString(),
+    //                     exactAddress);
+
+    //                 if (result)
+    //                     successCount++;
+    //             }
+
+    //             _logger.LogInformation($"✅ {successCount}/{exactAddresses.Count} adres başarıyla eklendi");
+
+    //             return successCount > 0;
+    //         }
+    //         catch (Exception ex)
+    //         {
+    //             _logger.LogError($"❌ Senkronizasyon hatası: {ex.Message}");
+    //             return false;
+    //         }
+    //     }
+
+    //     /// <summary>
+    //     /// Shopify'da müşteriyi email ile bulur
+    //     /// </summary>
+    //     private async Task<ShopifyCustomerDto> CustomerFindByEmailNew(string email)
+    //     {
+    //         try
+    //         {
+    //             if (string.IsNullOrEmpty(email))
+    //                 return null;
+    //              var response = await _client.GetAsync($"customers/search.json?query=email:{email}");
+                
+    //             if (!response.IsSuccessStatusCode)
+    //                 return null;
+
+    //             var content = await response.Content.ReadAsStringAsync();
+    //             using var doc = JsonDocument.Parse(content);
+
+    //             if (doc.RootElement.TryGetProperty("customers", out var customers))
+    //             {
+    //                 if (customers.GetArrayLength() > 0)
+    //                 {
+    //                      var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+    //                     var shopifyCustomer = JsonSerializer.Deserialize<ShopifyCustomerDto>(
+    //                     customers.GetRawText(), options);
+    //                     return shopifyCustomer;
+    //                     // var customerId = customers[0].GetProperty("id").GetInt64().ToString();
+    //                     // return customerId;
+    //                 }
+    //             }
+
+    //             return null;
+    //         }
+    //         catch (Exception ex)
+    //         {
+    //             _logger.LogError($"❌ Müşteri arama hatası: {ex.Message}");
+    //             return null;
+    //         }
+    //     }
+
+    //     /// <summary>
+    //     /// Shopify'a adres ekler ve exactId metafield'ını atar
+    //     /// </summary>
+    //     private async Task<bool> AddAddressToShopifyCustomer(
+    //         string shopifyCustomerId,
+    //         ExactAddress exactAddress)
+    //     {
+    //         try
+    //         {
+                
+    //             // Exact adresini Shopify formatına dönüştür
+    //             var shopifyAddress = new
+    //             {
+    //                 address = new
+    //                 {
+    //                     first_name = exactAddress.ContactName ?? "",
+    //                     last_name = exactAddress.Surname ?? "",
+    //                     company = exactAddress.AddressLine2 ?? "",
+    //                     address1 = exactAddress.Street ?? "",
+    //                     address2 = exactAddress.HouseNumberSuffix ?? "",
+    //                     city = exactAddress.City ?? "",
+    //                     province = exactAddress.State ?? "",
+    //                     country = exactAddress.Country ?? "",
+    //                     zip = exactAddress.PostalCode ?? "",
+    //                     phone = exactAddress.PhoneNumber ?? "",
+    //                     province_code = exactAddress.State ?? ""
+    //                 }
+    //             };
+
+    //             var json = JsonSerializer.Serialize(shopifyAddress);
+    //             var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+    //             var response = await _client.PostAsync(
+    //                 $"{_shopifyBaseUrl}/admin/api/2024-01/customers/{shopifyCustomerId}/addresses.json",
+    //                 content);
+
+    //             if (!response.IsSuccessStatusCode)
+    //             {
+    //                 _logger.LogWarning($"⚠️ Adres ekleme başarısız: {response.StatusCode}");
+    //                 return false;
+    //             }
+
+    //             var responseContent = await response.Content.ReadAsStringAsync();
+    //             using var doc = JsonDocument.Parse(responseContent);
+
+    //             if (doc.RootElement.TryGetProperty("customer_address", out var address))
+    //             {
+    //                 var addressId = address.GetProperty("id").GetInt64().ToString();
+
+    //                 // Metafield'ı ata
+    //                 var metafieldsResult = await SetAddressMetafield(
+    //                     shopifyCustomerId,
+    //                     addressId,
+    //                     exactAddress.ID);
+
+    //                 if (metafieldsResult)
+    //                 {
+    //                     _logger.LogInformation(
+    //                         $"✅ Adres eklendi: {exactAddress.City} (Exact ID: {exactAddress.ID})");
+    //                     return true;
+    //                 }
+    //             }
+
+    //             return false;
+    //         }
+    //         catch (Exception ex)
+    //         {
+    //             _logger.LogError($"❌ Adres ekleme hatası: {ex.Message}");
+    //             return false;
+    //         }
+    //     }
+
+    //     /// <summary>
+    //     /// Adres metafield'larını oluşturur veya günceller
+    //     /// </summary>
+    //     private async Task CreateOrUpdateAddressMetafields()
+    //     {
+    //         try
+    //         {
+    //             var client = _httpClientFactory.CreateClient();
+    //             var auth = Convert.ToBase64String(
+    //                 System.Text.Encoding.ASCII.GetBytes($"{_shopifyApiKey}:{_shopifyApiPassword}"));
+                
+    //             client.DefaultRequestHeaders.Authorization = 
+    //                 new AuthenticationHeaderValue("Basic", auth);
+
+    //             // exactId metafield'ını oluştur
+    //             var metafield = new
+    //             {
+    //                 metafield = new {
+    //                     "namespace" = "custom",
+    //                     "key" = "exactId",
+    //                     "value" = "",
+    //                     "type" = "single_line_text",
+    //                     "description" = "Exact sistemindeki adres ID'si"
+    //                 }
+    //             };
+
+    //             var json = JsonSerializer.Serialize(metafield);
+    //             var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+    //             var response = await client.PostAsync(
+    //                 $"{_shopifyBaseUrl}/admin/api/2024-01/customer_address_metafields.json",
+    //                 content);
+
+    //             // 409 = Zaten var (bok sorun değil)
+    //             if (response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.Conflict)
+    //             {
+    //                 _logger.LogInformation("✅ Metafield hazır");
+    //                 return;
+    //             }
+
+    //             _logger.LogWarning($"⚠️ Metafield oluşturma başarısız: {response.StatusCode}");
+    //         }
+    //         catch (Exception ex)
+    //         {
+    //             _logger.LogError($"❌ Metafield hatası: {ex.Message}");
+    //         }
+    //     }
+
+    //     /// <summary>
+    //     /// Adrese exactId metafield'ını atar
+    //     /// </summary>
+    //     private async Task<bool> SetAddressMetafield(
+    //         string customerId,
+    //         string addressId,
+    //         string exactId)
+    //     {
+    //         try
+    //         {
+    //             var client = _httpClientFactory.CreateClient();
+    //             var auth = Convert.ToBase64String(
+    //                 System.Text.Encoding.ASCII.GetBytes($"{_shopifyApiKey}:{_shopifyApiPassword}"));
+                
+    //             client.DefaultRequestHeaders.Authorization = 
+    //                 new AuthenticationHeaderValue("Basic", auth);
+
+    //             var metafield = new
+    //             {
+    //                 metafield = new
+    //                 {
+    //                     "namespace" = "custom",
+    //                     "key" = "exactId",
+    //                     "value" = exactId,
+    //                     "type" = "single_line_text"
+    //                 }
+    //             };
+
+    //             var json = JsonSerializer.Serialize(metafield);
+    //             var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+    //             var response = await client.PostAsync(
+    //                 $"{_shopifyBaseUrl}/admin/api/2024-01/customer_addresses/{addressId}/metafields.json",
+    //                 content);
+
+    //             return response.IsSuccessStatusCode;
+    //         }
+    //         catch (Exception ex)
+    //         {
+    //             _logger.LogError($"❌ Metafield atama hatası: {ex.Message}");
+    //             return false;
+    //         }
+    //     }
+
+    
 
     //tüm aktarım kodları ihtiyaç halinde buraya eklenebilir
     //tüm aktarım için
@@ -1016,5 +1285,27 @@ public class ShopifyCustomerCrud
     //     }
     // }
 
+   
+
+    // DTO'lar
+  
+
+    // public class ShopifyCustomerDto
+    // {
+    //     [JsonPropertyName("id")]
+    //     public long Id { get; set; }
+
+    //     [JsonPropertyName("email")]
+    //     public string Email { get; set; }
+
+    //     [JsonPropertyName("first_name")]
+    //     public string FirstName { get; set; }
+
+    //     [JsonPropertyName("last_name")]
+    //     public string LastName { get; set; }
+
+    //     [JsonPropertyName("exact_customer_id")]
+    //     public string ExactCustomerId { get; set; }
+    // }
 
 }

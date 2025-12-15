@@ -43,7 +43,7 @@ namespace ShopifyProductApp.Services
                         var exactService = scope.ServiceProvider.GetRequiredService<ExactService>();
                         var shopifyService = scope.ServiceProvider.GetRequiredService<ShopifyService>();
                         // var settingsService = scope.ServiceProvider.GetRequiredService<SettingsService>();
-                         var settingsService = scope.ServiceProvider.GetRequiredService<ISettingsService>();
+                        var settingsService = scope.ServiceProvider.GetRequiredService<ISettingsService>();
 
                         // Token kontrolü - ExactService içinden
                         var tokenResponse = await exactService.GetValidToken();
@@ -64,7 +64,7 @@ namespace ShopifyProductApp.Services
                     _logger.LogError(ex, "❌ Product sync service hatası: {Error}", ex.Message);
                 }
 
-                await Task.Delay(TimeSpan.FromMinutes(140), stoppingToken);
+                await Task.Delay(TimeSpan.FromMinutes(200), stoppingToken);
             }
         }
 
@@ -107,14 +107,6 @@ namespace ShopifyProductApp.Services
                 {
                     try
                     {
-                        // Her batch öncesi token kontrolü
-                        var tokenResponse = await exactService.GetValidToken();
-                        if (tokenResponse == null || string.IsNullOrEmpty(tokenResponse.access_token))
-                        {
-                            _logger.LogWarning("⚠️ İşlem sırasında token geçersiz hale geldi");
-                            break;
-                        }
-
                         _logger.LogInformation("🔄 Batch {Current}/{Total} işleniyor ({Count} ürün)",
                             batchNumber, batches.Count, batch.Count);
 
@@ -138,11 +130,11 @@ namespace ShopifyProductApp.Services
                                 var price = exactProduct.StandardSalesPrice ?? 0m;
 
                                 // Log dosyası oluştur (her ürün için ayrı)
-                               var logFile = _updateLogFile;
+                                var logFile = _updateLogFile;
 
                                 _logger.LogDebug("🔄 Güncelleniyor: SKU={Sku}, Title={Title}, Price={Price}",
                                     sku, title, price);
-                                    if(sku == "CHS1051007016")
+                                if (sku == "CHS1051007016")
                                 {
                                     Console.WriteLine("BURADA.");
                                 }
