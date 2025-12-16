@@ -110,6 +110,31 @@ builder.Services.AddScoped<ExactAddressCrud>(serviceProvider =>
         serviceProvider: serviceProvider
     );
 });
+builder.Services.AddScoped<ExactProductCrud>(serviceProvider =>
+{
+    // ✅ DÜZELTME: ISettingsService kullan (SettingsService yerine)
+    var settingsService = serviceProvider.GetRequiredService<ISettingsService>();
+    var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+    var tokenManager = serviceProvider.GetRequiredService<ITokenManager>();
+    var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+    var logger = loggerFactory.CreateLogger<ExactCustomerCrud>();
+
+
+    var exactSection = configuration.GetSection("ExactOnline");
+
+    return new ExactProductCrud(
+        clientId: exactSection["ClientId"] ?? throw new InvalidOperationException("ExactOnline:ClientId is missing"),
+        clientSecret: exactSection["ClientSecret"] ?? throw new InvalidOperationException("ExactOnline:ClientSecret is missing"),
+        redirectUri: exactSection["RedirectUri"] ?? throw new InvalidOperationException("ExactOnline:RedirectUri is missing"),
+        baseUrl: exactSection["BaseUrl"] ?? "https://start.exactonline.nl",
+        divisionCode: exactSection["DivisionCode"] ?? throw new InvalidOperationException("ExactOnline:DivisionCode is missing"),
+        tokenFile: exactSection["TokenFile"] ?? "token.json",
+        logger: logger,
+        settingsService: settingsService,
+        tokenManager: tokenManager,
+        serviceProvider: serviceProvider
+    );
+});
 
 // 3️⃣ Background Service - Token'ı proaktif yeniler
 builder.Services.AddHostedService<TokenRefreshBackgroundService>();
@@ -141,6 +166,19 @@ builder.Services.AddScoped<ShopifyCustomerCrud>(serviceProvider =>
         serviceProvider: serviceProvider
     );
 });
+builder.Services.AddScoped<ShopifyOrderCrud>(serviceProvider =>
+{
+    var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+    var shopifySection = configuration.GetSection("Shopify");
+
+    return new ShopifyOrderCrud(
+        shopifyStoreUrl: shopifySection["StoreUrl"] ?? throw new InvalidOperationException("Shopify:StoreUrl is missing"),
+        accessToken: shopifySection["AccessToken"] ?? throw new InvalidOperationException("Shopify:AccessToken is missing"),
+        graphqlService: serviceProvider.GetRequiredService<ShopifyGraphQLService>(),
+        logger: serviceProvider.GetRequiredService<ILogger<ShopifyCustomerCrud>>(),
+        serviceProvider: serviceProvider
+    );
+});
 
 // ✨ HttpClientFactory ekle (GraphQL için gerekli)
 builder.Services.AddHttpClient();
@@ -154,11 +192,12 @@ builder.Services.AddSingleton<AppConfiguration>();
 // Thread-Safe Background Services
 builder.Services.AddHostedService<StockSyncBackgroundService>();        // Stok sync (günlük 09:30)
 //bu eklendi classification kontrolü içim
-//builder.Services.AddHostedService<UpdateExactCustomerJob>();
+builder.Services.AddHostedService<UpdateExactCustomerJob>();
 //bunlar artık yok
 //builder.Services.AddHostedService<NewProductCreationService>();
 //bunu stok ile birleştireceğim
-builder.Services.AddHostedService<ProductPriceAndTitleUpdate>(); 
+// builder.Services.AddHostedService<ProductPriceAndTitleUpdate>(); 
+builder.Services.AddScoped<ProductPriceAndTitleUpdateService>();
 
 var app = builder.Build();
 

@@ -16,22 +16,26 @@ namespace ShopifyProductApp.Controllers
         private readonly ShopifyService _shopifyService;
         private readonly ShopifyCustomerCrud _shopifyCustomerService;
         private readonly ShopifyGraphQLService _graphqlService;
-private readonly ExactAddressCrud _exactAddressCrud;
+        private readonly ExactAddressCrud _exactAddressCrud;
+        private readonly ExactProductCrud _exactProductCrud;
         private readonly AppConfiguration _config;
         private readonly ILogger<ProductsController> _logger;
         private readonly IConfiguration _configg;
+        private readonly ProductPriceAndTitleUpdateService _productSyncService;
 
         // ✅ Cache sistemi
         private const string CUSTOMER_CACHE_PATH = "data/customers_cache.json";
         private const int CACHE_VALIDITY_HOURS = 24;
 
 
-        public ProductsController(ShopifyGraphQLService graphqlService, 
-        ExactService exactService, 
-        ExactCustomerCrud exactCustomerService,  
-        ShopifyService shopifyService, 
+        public ProductsController(ShopifyGraphQLService graphqlService,
+        ExactService exactService,
+        ExactCustomerCrud exactCustomerService,
+        ShopifyService shopifyService,
         ShopifyCustomerCrud shopifyCustomerCrud,
         ExactAddressCrud exactAddressCrud,
+         ExactProductCrud exactProductCrud,
+        ProductPriceAndTitleUpdateService productSyncService,
          AppConfiguration config, ILogger<ProductsController> logger, IConfiguration configg)
         {
             _graphqlService = graphqlService;
@@ -40,6 +44,8 @@ private readonly ExactAddressCrud _exactAddressCrud;
             _shopifyService = shopifyService;
             _shopifyCustomerService = shopifyCustomerCrud;
             _exactAddressCrud = exactAddressCrud;
+            _exactProductCrud = exactProductCrud;
+            _productSyncService = productSyncService;
             _config = config;
             _logger = logger;
             _configg = configg;
@@ -558,7 +564,7 @@ private readonly ExactAddressCrud _exactAddressCrud;
             var customersJson = await _exactService.GetAllWarehouseAsync();
             return Content(customersJson, "application/json");
         }
-          [HttpGet("exact-shipping")]
+        [HttpGet("exact-shipping")]
         public async Task<IActionResult> GetShiping()
         {
             var shippingJson = await _exactService.GetAllShippingMethodAsync();
@@ -579,6 +585,23 @@ private readonly ExactAddressCrud _exactAddressCrud;
         {
             var products = await _exactCustomerService.GetAllUpdateCustomersAsync();
             return Ok(products);
+        }
+
+        [HttpGet("sync-products")]
+        public async Task<IActionResult> SyncProducts()
+        {
+            try
+            {
+                _logger.LogInformation("Manuel product sync başlatıldı");
+                await _productSyncService.ExecuteAsync();
+
+                return Ok(new { message = "Product sync işlemi başarıyla tamamlandı" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Product sync işleminde hata oluştu");
+                return StatusCode(500, new { error = ex.Message });
+            }
         }
         //---
 
@@ -609,9 +632,9 @@ private readonly ExactAddressCrud _exactAddressCrud;
             // var logFilePath = Path.Combine("logs", $"customer-sync-{DateTime.Now:yyyyMMdd}.log");
             // // foreach (var customer in allCustomer)
             // // {
-                 
 
-            
+
+
             // // }
             // try
             //     {
@@ -664,9 +687,9 @@ private readonly ExactAddressCrud _exactAddressCrud;
                 // failureCount = failureCount,
                 // logFile = logFilePath,
                 cacheUsed = await IsCacheValidAsync(),
-                 details = shopifyCustomer
+                details = shopifyCustomer
             });
-          
+
         }
 
         // ✅ YENİ METOD: Cache'den veya API'den müşterileri al
@@ -947,6 +970,33 @@ private readonly ExactAddressCrud _exactAddressCrud;
 
             return Ok(item);
         }
+        [HttpGet("get-item-by-new-code")]
+        public async Task<IActionResult> GetItemNewByCode([FromQuery] string code)
+        {
+            if (string.IsNullOrEmpty(code))
+            {
+                return BadRequest("Code parametresi gereklidir");
+            }
+
+            var item = await _exactProductCrud.GetItemByCodeAsync(code);
+            if (item?.Success == true && item.Results.Count > 0)
+            {
+                var product = item.Results[0];
+                var logFile = Path.Combine("logs", $"shopify-product-create-{DateTime.Now:yyyyMMdd}.log");
+                var success = await _shopifyService.CreateProductAsync(product, logFile);
+                if(success)
+                {
+                    Console.WriteLine("Shopify ürün oluşturuldu.");
+                }
+                else
+                {
+                    Console.WriteLine("Shopify ürün oluşturulamadı.");
+
+                }
+                return Ok(item.Results[0]);
+            }
+            return Ok("Ürün bulunamadı");
+        }
 
         [HttpGet("exact-recent-orders")]
         public async Task<IActionResult> GetRecentOrders()
@@ -957,45 +1007,47 @@ private readonly ExactAddressCrud _exactAddressCrud;
 
 
         ////
-     [HttpGet("shopify-customers")]
-public async Task<IActionResult> GetShopifyCustomers()
-{
-    try
-    {
-        Console.WriteLine("👥 Shopify müşterileri getiriliyor (GraphQL)...");
-
-        // GraphQL ile tüm müşterileri çek
-        //var customers = await _graphqlService.GetAllCustomersAsync(batchSize: 250);
-        var testcustomer = await _graphqlService.SearchCustomerByEmailOrCodeAsync(customerCode: "1301311");
-        if (testcustomer != null)
+        [HttpGet("shopify-customers")]
+        public async Task<IActionResult> GetShopifyCustomers()
         {
-            Console.WriteLine($"✅ Test Müşteri Bulundu: {testcustomer.Id} - {testcustomer.Email}");
+            try
+            {
+                Console.WriteLine("👥 Shopify müşterileri getiriliyor (GraphQL)...");
+
+                // GraphQL ile tüm müşterileri çek
+                //var customers = await _graphqlService.GetAllCustomersAsync(batchSize: 250);
+                var testcustomer = await _graphqlService.SearchCustomerByEmailOrCodeAsync(customerCode: "1301311");
+                if (testcustomer != null)
+                {
+                    Console.WriteLine($"✅ Test Müşteri Bulundu: {testcustomer.Id} - {testcustomer.Email}");
+                }
+                else
+                {
+                    Console.WriteLine("❌ Test Müşteri Bulunamadı");
+                }
+
+                // if (customers == null || customers.Count == 0)
+                // {
+                //     Console.WriteLine("❌ Shopify müşterileri alınamadı");
+                //     return Problem("Müşteriler alınamadı veya token geçersiz.");
+                // }
+
+                // foreach (var customer in customers)
+                // {
+                //     Console.WriteLine($"Müşteri: {customer.Id} - {customer.FirstName} {customer.LastName} ({customer.Email})");
+                // }
+
+                //Console.WriteLine($"✅ {customers.Count} müşteri alındı");
+                return Ok(testcustomer);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Hata: {ex.Message}");
+                return StatusCode(500, $"Bir hata oluştu: {ex.Message}");
+            }
         }
-        else
-        {
-            Console.WriteLine("❌ Test Müşteri Bulunamadı");
-        }
 
-        // if (customers == null || customers.Count == 0)
-        // {
-        //     Console.WriteLine("❌ Shopify müşterileri alınamadı");
-        //     return Problem("Müşteriler alınamadı veya token geçersiz.");
-        // }
-
-        // foreach (var customer in customers)
-        // {
-        //     Console.WriteLine($"Müşteri: {customer.Id} - {customer.FirstName} {customer.LastName} ({customer.Email})");
-        // }
-
-        //Console.WriteLine($"✅ {customers.Count} müşteri alındı");
-        return Ok(testcustomer);
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"❌ Hata: {ex.Message}");
-        return StatusCode(500, $"Bir hata oluştu: {ex.Message}");
-    }
-}
+        
     }
 
     // ✅ Cache veri modeli

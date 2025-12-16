@@ -16,16 +16,19 @@ namespace ShopifyProductApp.Controllers
         private readonly ShopifyService _shopifyService;
         private readonly ShopifyGraphQLService _graphqlService;
         private readonly AppConfiguration _config;
+
+        private readonly ShopifyOrderCrud _shopifyOrderCrud;
         private readonly ILogger<ProductsController> _logger;
         private readonly IConfiguration _configg;
 
 
-        public OrderController(ShopifyGraphQLService graphqlService, ExactService exactService, ShopifyService shopifyService, AppConfiguration config, ILogger<ProductsController> logger, IConfiguration configg)
+        public OrderController(ShopifyGraphQLService graphqlService, ExactService exactService, ShopifyService shopifyService, AppConfiguration config, ShopifyOrderCrud shopifyOrderCrud, ILogger<ProductsController> logger, IConfiguration configg)
         {
             _graphqlService = graphqlService;
             _exactService = exactService;
             _shopifyService = shopifyService;
             _config = config;
+            _shopifyOrderCrud = shopifyOrderCrud;
             _logger = logger;
             _configg = configg;
         }
@@ -117,6 +120,18 @@ namespace ShopifyProductApp.Controllers
         }
 
 
+
+        [HttpGet("shopify-order/{orderId}")]
+        public async Task<IActionResult> GetShopifyOrderById(long orderId)
+        {
+            
+            var order = await _shopifyOrderCrud.GetOrderByIdAsync(orderId);
+            if (order == null)
+            {
+                return NotFound(new { message = $"Shopify sipariş {orderId} bulunamadı" });
+            }
+            return Ok(order);
+        }
 
     }
 }

@@ -50,6 +50,7 @@ namespace ShopifyProductApp.Services
                         var shopifyService = scope.ServiceProvider.GetRequiredService<ShopifyService>();
                         // ✅ DÜZELTME: ISettingsService kullan
                         var settingsService = scope.ServiceProvider.GetRequiredService<ISettingsService>();
+                        var productSyncService = scope.ServiceProvider.GetRequiredService<ProductPriceAndTitleUpdateService>();
 
                         // Token kontrolü
                         var tokenResponse = await exactService.GetValidToken();
@@ -59,7 +60,7 @@ namespace ShopifyProductApp.Services
                             continue;
                         }
 
-                        await PerformStockSync(exactService, shopifyService, settingsService);
+                        await PerformStockSync(exactService, shopifyService, settingsService,productSyncService);
                     }
 
                     _logger.LogInformation("✅ Günlük stok senkronizasyonu tamamlandı");
@@ -83,7 +84,8 @@ namespace ShopifyProductApp.Services
         private async Task PerformStockSync(
             ExactService exactService, 
             ShopifyService shopifyService, 
-            ISettingsService settingsService)
+            ISettingsService settingsService,
+            ProductPriceAndTitleUpdateService productSyncService)
         {
             try
             {
@@ -103,6 +105,9 @@ namespace ShopifyProductApp.Services
 
                 _logger.LogInformation("🎉 Stok senkronizasyonu tamamlandı - Başarılı: {Success}, Hatalı: {Error}",
                     batchResult.SuccessCount, batchResult.ErrorCount);
+
+                //price ve title güncellemesi
+                await productSyncService.ExecuteAsync();
 
                 shopifyProducts.Dispose();
             }
