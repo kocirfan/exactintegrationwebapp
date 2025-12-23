@@ -136,6 +136,85 @@ builder.Services.AddScoped<ExactProductCrud>(serviceProvider =>
     );
 });
 
+//raporlar exact
+builder.Services.AddScoped<ExactSalesReports>(serviceProvider =>
+{
+    // ✅ DÜZELTME: ISettingsService kullan (SettingsService yerine)
+    var settingsService = serviceProvider.GetRequiredService<ISettingsService>();
+    var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+    var tokenManager = serviceProvider.GetRequiredService<ITokenManager>();
+    var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+    var logger = loggerFactory.CreateLogger<ExactCustomerCrud>();
+
+
+    var exactSection = configuration.GetSection("ExactOnline");
+
+    return new ExactSalesReports(
+        clientId: exactSection["ClientId"] ?? throw new InvalidOperationException("ExactOnline:ClientId is missing"),
+        clientSecret: exactSection["ClientSecret"] ?? throw new InvalidOperationException("ExactOnline:ClientSecret is missing"),
+        redirectUri: exactSection["RedirectUri"] ?? throw new InvalidOperationException("ExactOnline:RedirectUri is missing"),
+        baseUrl: exactSection["BaseUrl"] ?? "https://start.exactonline.nl",
+        divisionCode: exactSection["DivisionCode"] ?? throw new InvalidOperationException("ExactOnline:DivisionCode is missing"),
+        tokenFile: exactSection["TokenFile"] ?? "token.json",
+        logger: logger,
+        settingsService: settingsService,
+        tokenManager: tokenManager,
+        serviceProvider: serviceProvider
+    );
+});
+builder.Services.AddScoped<CustomerReports>(serviceProvider =>
+{
+    // ✅ DÜZELTME: ISettingsService kullan (SettingsService yerine)
+    var settingsService = serviceProvider.GetRequiredService<ISettingsService>();
+    var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+    var tokenManager = serviceProvider.GetRequiredService<ITokenManager>();
+    var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+    var logger = loggerFactory.CreateLogger<ExactCustomerCrud>();
+
+
+    var exactSection = configuration.GetSection("ExactOnline");
+
+    return new CustomerReports(
+        clientId: exactSection["ClientId"] ?? throw new InvalidOperationException("ExactOnline:ClientId is missing"),
+        clientSecret: exactSection["ClientSecret"] ?? throw new InvalidOperationException("ExactOnline:ClientSecret is missing"),
+        redirectUri: exactSection["RedirectUri"] ?? throw new InvalidOperationException("ExactOnline:RedirectUri is missing"),
+        baseUrl: exactSection["BaseUrl"] ?? "https://start.exactonline.nl",
+        divisionCode: exactSection["DivisionCode"] ?? throw new InvalidOperationException("ExactOnline:DivisionCode is missing"),
+        tokenFile: exactSection["TokenFile"] ?? "token.json",
+        logger: logger,
+        settingsService: settingsService,
+        tokenManager: tokenManager,
+        serviceProvider: serviceProvider
+    );
+});
+builder.Services.AddScoped<QuotationReports>(serviceProvider =>
+{
+    // ✅ DÜZELTME: ISettingsService kullan (SettingsService yerine)
+    var settingsService = serviceProvider.GetRequiredService<ISettingsService>();
+    var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+    var tokenManager = serviceProvider.GetRequiredService<ITokenManager>();
+    var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+    var logger = loggerFactory.CreateLogger<ExactCustomerCrud>();
+
+
+    var exactSection = configuration.GetSection("ExactOnline");
+
+    return new QuotationReports(
+        clientId: exactSection["ClientId"] ?? throw new InvalidOperationException("ExactOnline:ClientId is missing"),
+        clientSecret: exactSection["ClientSecret"] ?? throw new InvalidOperationException("ExactOnline:ClientSecret is missing"),
+        redirectUri: exactSection["RedirectUri"] ?? throw new InvalidOperationException("ExactOnline:RedirectUri is missing"),
+        baseUrl: exactSection["BaseUrl"] ?? "https://start.exactonline.nl",
+        divisionCode: exactSection["DivisionCode"] ?? throw new InvalidOperationException("ExactOnline:DivisionCode is missing"),
+        tokenFile: exactSection["TokenFile"] ?? "token.json",
+        logger: logger,
+        settingsService: settingsService,
+        tokenManager: tokenManager,
+        serviceProvider: serviceProvider
+    );
+});
+
+
+
 // 3️⃣ Background Service - Token'ı proaktif yeniler
 builder.Services.AddHostedService<TokenRefreshBackgroundService>();
 builder.Services.AddScoped<AddressMatchingService>();
@@ -179,6 +258,9 @@ builder.Services.AddScoped<ShopifyOrderCrud>(serviceProvider =>
         serviceProvider: serviceProvider
     );
 });
+
+
+
 
 // ✨ HttpClientFactory ekle (GraphQL için gerekli)
 builder.Services.AddHttpClient();
@@ -320,3 +402,4 @@ Console.WriteLine("   GET /api/order/exact-orders-by-email/{email} - Email ile s
 Console.WriteLine("🚀 Uygulama hazır!");
 
 app.Run();
+
