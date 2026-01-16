@@ -57,7 +57,7 @@ public class ExactService
         int top = 60; // Exact Online limitine uygun
         int skip = 0;
         var webshopProducts = new List<ExactProduct>(); // ExactProduct listesi
-        var yesterday = DateTime.UtcNow.AddDays(-1);
+        var yesterday = DateTime.UtcNow.AddDays(-2);
         var dateFilter = yesterday.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
 
         while (true)
@@ -2799,7 +2799,7 @@ public class ExactService
         return updatedItems;
     }
 
-    public async Task<bool> CreateSalesOrderAsync(ExactOrder order)
+    public async Task<(bool success, Guid? orderId, string? orderNumber)> CreateSalesOrderAsync(ExactOrder order)
     {
         try
         {
@@ -2807,7 +2807,7 @@ public class ExactService
             if (token == null)
             {
                 Console.WriteLine("❌ Token alınamadı");
-                return false;
+                return (false, null, null);
             }
 
             using var client = new HttpClient();
@@ -2836,22 +2836,58 @@ public class ExactService
 
             if (response.IsSuccessStatusCode)
             {
-                _logger.LogInformation("✅ ExactOnline satış siparişi başarıyla oluşturuldu");
-                return true;
+                // Response'dan OrderID ve OrderNumber'ı çıkar
+                try
+                {
+                    using var doc = JsonDocument.Parse(responseBody);
+                    var root = doc.RootElement;
+
+                    Guid? createdOrderId = null;
+                    string? createdOrderNumber = null;
+
+                    // Exact Online genellikle "d" altında response döner
+                    if (root.TryGetProperty("d", out var dElement))
+                    {
+                        if (dElement.TryGetProperty("OrderID", out var orderIdProp) && orderIdProp.ValueKind == JsonValueKind.String)
+                        {
+                            if (Guid.TryParse(orderIdProp.GetString(), out var parsedGuid))
+                            {
+                                createdOrderId = parsedGuid;
+                            }
+                        }
+
+                        if (dElement.TryGetProperty("OrderNumber", out var orderNumProp))
+                        {
+                            createdOrderNumber = orderNumProp.ValueKind == JsonValueKind.Number
+                                ? orderNumProp.GetInt32().ToString()
+                                : orderNumProp.GetString();
+                        }
+                    }
+
+                    _logger.LogInformation("✅ ExactOnline satış siparişi başarıyla oluşturuldu - OrderID: {OrderId}, OrderNumber: {OrderNumber}",
+                        createdOrderId, createdOrderNumber);
+
+                    return (true, createdOrderId, createdOrderNumber);
+                }
+                catch (Exception parseEx)
+                {
+                    _logger.LogWarning("⚠️ Response parse edilemedi ama sipariş oluşturuldu: {Error}", parseEx.Message);
+                    return (true, null, null);
+                }
             }
             else
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
                 _logger.LogError($"❌ ExactOnline sipariş oluşturma hatası: {errorContent}");
                 Console.WriteLine($"❌ Hata detayı: {errorContent}");
-                return false;
+                return (false, null, null);
             }
         }
         catch (Exception ex)
         {
             _logger.LogError($"❌ ExactOnline sipariş oluşturma hatası: {ex.Message}");
             Console.WriteLine($"❌ Exception: {ex.Message}");
-            return false;
+            return (false, null, null);
         }
     }
 

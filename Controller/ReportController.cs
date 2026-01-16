@@ -1,13 +1,16 @@
 
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using ShopifyProductApp.Services;
 using Microsoft.AspNetCore.Cors;
 using Newtonsoft.Json;
 using System.Text;
 using ExactOnline.Models;
+using ExactWebApp.Dto;
 
 namespace ShopifyProductApp.Controllers
 {
+    [Authorize]
     [ApiController]
     [Route("api/[controller]")]
     public class ReportController : ControllerBase
@@ -23,6 +26,8 @@ namespace ShopifyProductApp.Controllers
         private readonly ITokenManager _tokenManager;
         private readonly ISettingsService _settingsService;
         private readonly ExactSalesReports _exactSalesReports;
+
+        private readonly ExactSalesReportsUltraOptimized _exactSalesReportsUltraOptimized;
 
         private readonly CustomerReports _customerReports;
 
@@ -40,7 +45,9 @@ namespace ShopifyProductApp.Controllers
             ITokenManager tokenManager,
             ISettingsService settingsService,
             ExactSalesReports exactSalesReports,
-            CustomerReports customerReports)
+            CustomerReports customerReports,
+            ExactSalesReportsUltraOptimized exactSalesReportsUltraOptimized
+            )
         {
             _graphqlService = graphqlService;
             _exactService = exactService;
@@ -54,6 +61,7 @@ namespace ShopifyProductApp.Controllers
             _settingsService = settingsService;
             _exactSalesReports = exactSalesReports;
             _customerReports = customerReports;
+            _exactSalesReportsUltraOptimized = exactSalesReportsUltraOptimized;
         }
 
 
@@ -67,50 +75,52 @@ namespace ShopifyProductApp.Controllers
             return value;
         }
 
-        [HttpGet("top-products")]
-        public async Task<IActionResult> GetTopProducts(
-       [FromQuery] string period = "OneYear",
-       [FromQuery] int topCount = 5)
-        {
-            if (!Enum.TryParse<TimePeriod>(period, out var timePeriod))
-            {
-                return BadRequest("Geçersiz periyod. Geçerli değerler: OneDay, OneWeek, OneMonth, ThreeMonths, SixMonths, OneYear");
-            }
+        //     [HttpGet("top-products")]
+        //     public async Task<IActionResult> GetTopProducts(
+        //    [FromQuery] string period = "OneYear",
+        //    [FromQuery] ReportFilterModel filter = null)
+        //     {
+        //         filter ??= new ReportFilterModel();
+        //         if (!Enum.TryParse<TimePeriod>(period, out var timePeriod))
+        //         {
+        //             return BadRequest("Geçersiz periyod. Geçerli değerler: OneDay, OneWeek, OneMonth, ThreeMonths, SixMonths, OneYear");
+        //         }
 
-            if (topCount < 1 || topCount > 100)
-            {
-                return BadRequest("topCount 1 ile 100 arasında olmalıdır");
-            }
+        //         if (filter.TopCount < 1 || filter.TopCount > 100)
+        //         {
+        //             return BadRequest("topCount 1 ile 100 arasında olmalıdır");
+        //         }
 
-            var result = await _exactSalesReports.GetTopSalesPeriodProductsAsync(timePeriod, topCount);
+        //         var result = await _exactSalesReports.GetTopSalesPeriodProductsAsync(timePeriod, filter);
 
-            if (result == null)
-            {
-                return StatusCode(500, "Veri alınamadı");
-            }
+        //         if (result == null)
+        //         {
+        //             return StatusCode(500, "Veri alınamadı");
+        //         }
 
-            return Ok(new
-            {
-                success = true,
-                count = result.Count,
-                period = period,
-                data = result
-            });
-        }
+        //         return Ok(new
+        //         {
+        //             success = true,
+        //             count = result.Count,
+        //             period = period,
+        //             data = result
+        //         });
+        //     }
 
         //yeni metot iki tarih arasındaki veriyi alacak
         [HttpGet("top-sales-by-date")]
         public async Task<ActionResult<List<TopProductDto>>> GetTopSalesProductsByDate(
     [FromQuery] DateTime? startDate,
     [FromQuery] DateTime? endDate,
-    [FromQuery] int topCount = 5)
+    [FromQuery] ReportFilterModel filter = null)
         {
+            filter ??= new ReportFilterModel();
             if (startDate.HasValue && endDate.HasValue && startDate > endDate)
             {
                 return BadRequest(new { message = "Başlangıç tarihi bitiş tarihinden sonra olamaz" });
             }
 
-            var result = await _exactSalesReports.GetTopSalesProductsAsync(startDate, endDate, topCount);
+            var result = await _exactSalesReports.GetTopSalesProductsAsync(startDate, endDate, filter);
 
             if (result == null)
             {
@@ -120,15 +130,15 @@ namespace ShopifyProductApp.Controllers
             return Ok(result);
         }
 
-        
+
 
         //karşılaştırmada bunu temel alacağım
         /// <summary>
         /// Özel tarih aralığını karşılaştırır
         /// GET /api/customersdatecomparison/custom
-        ///     ?startDate1=2024-01-01&endDate1=2024-01-31
-        ///     &startDate2=2023-01-01&endDate2=2023-01-31
-        ///     &topCount=10
+        ///     ?startDate1=2024-01-01&amp;endDate1=2024-01-31
+        ///     &amp;startDate2=2023-01-01&amp;endDate2=2023-01-31
+        ///     &amp;topCount=10
         /// </summary>
         [HttpGet("custom")]
         public async Task<IActionResult> CustomDateRange(
@@ -136,15 +146,16 @@ namespace ShopifyProductApp.Controllers
             [FromQuery] DateTime endDate1,
             [FromQuery] DateTime startDate2,
             [FromQuery] DateTime endDate2,
-            [FromQuery] int topCount = 10)
+            [FromQuery] ReportFilterModel filter = null)
         {
+            filter ??= new ReportFilterModel { TopCount = 10 };
             try
             {
                 _logger.LogInformation("📊 Özel Tarih Aralığı Karşılaştırması");
                 _logger.LogInformation($"   - Tarih 1: {startDate1:yyyy-MM-dd} to {endDate1:yyyy-MM-dd}");
                 _logger.LogInformation($"   - Tarih 2: {startDate2:yyyy-MM-dd} to {endDate2:yyyy-MM-dd}");
 
-                if (topCount < 1 || topCount > 100)
+                if (filter.TopCount < 1 || filter.TopCount > 100)
                     return BadRequest(new { error = "topCount must be between 1 and 100" });
 
                 if (startDate1 > endDate1 || startDate2 > endDate2)
@@ -153,7 +164,8 @@ namespace ShopifyProductApp.Controllers
                 var range1 = new DateRangeQuery(startDate1, endDate1, $"{startDate1:yyyy-MM-dd} to {endDate1:yyyy-MM-dd}");
                 var range2 = new DateRangeQuery(startDate2, endDate2, $"{startDate2:yyyy-MM-dd} to {endDate2:yyyy-MM-dd}");
 
-                var result = await _exactSalesReports.CompareDateRangesAsync(range1, range2, topCount);
+                var result = await _exactSalesReportsUltraOptimized.CompareDateRangesAsyncThreaded(range1, range2, filter);
+                
 
                 if (!result.Success)
                     return StatusCode(500, result);
@@ -167,80 +179,83 @@ namespace ShopifyProductApp.Controllers
             }
         }
 
-        [HttpGet("analysis")]
-        public async Task<IActionResult> GetAnalysis(
-            [FromQuery] string period = "OneYear",
-            [FromQuery] int topCount = 10)
-        {
-            if (!Enum.TryParse<TimePeriod>(period, out var timePeriod))
-            {
-                return BadRequest("Geçersiz periyod");
-            }
+        // [HttpGet("analysis")]
+        // public async Task<IActionResult> GetAnalysis(
+        //     [FromQuery] string period = "OneYear",
+        //     [FromQuery] ReportFilterModel filter = null)
+        // {
+        //     filter ??= new ReportFilterModel { TopCount = 10 };
+        //     if (!Enum.TryParse<TimePeriod>(period, out var timePeriod))
+        //     {
+        //         return BadRequest("Geçersiz periyod");
+        //     }
 
-            var result = await _exactSalesReports.AnalyzeSalesAsync(timePeriod, topCount);
-            return Ok(result);
-        }
+        //     var result = await _exactSalesReports.AnalyzeSalesAsync(timePeriod, filter);
+        //     return Ok(result);
+        // }
 
-        [HttpGet("all-orders")]
-        public async Task<IActionResult> GetAllOrders([FromQuery] string period = "OneYear")
-        {
-            if (!Enum.TryParse<TimePeriod>(period, out var timePeriod))
-            {
-                return BadRequest("Geçersiz periyod");
-            }
+        // [HttpGet("all-orders")]
+        // public async Task<IActionResult> GetAllOrders([FromQuery] string period = "OneYear")
+        // {
+        //     if (!Enum.TryParse<TimePeriod>(period, out var timePeriod))
+        //     {
+        //         return BadRequest("Geçersiz periyod");
+        //     }
 
-            var result = await _exactSalesReports.GetAllSalesOrderAsync(timePeriod);
-            return Ok(result);
-        }
+        //     var result = await _exactSalesReports.GetAllSalesOrderAsync(timePeriod);
+        //     return Ok(result);
+        // }
 
 
 
         // ==================== MÜŞTERİ ANALİZİ ====================
 
-        [HttpGet("top-customers")]
-        public async Task<IActionResult> GetTopCustomers(
-            [FromQuery] string period = "OneYear",
-            [FromQuery] int topCount = 5)
-        {
-            if (!Enum.TryParse<TimePeriod>(period, out var timePeriod))
-            {
-                return BadRequest("Geçersiz periyod. Geçerli değerler: OneDay, OneWeek, OneMonth, ThreeMonths, SixMonths, OneYear");
-            }
+        // [HttpGet("top-customers")]
+        // public async Task<IActionResult> GetTopCustomers(
+        //     [FromQuery] string period = "OneYear",
+        //     [FromQuery] ReportFilterModel filter = null)
+        // {
+        //     filter ??= new ReportFilterModel();
+        //     if (!Enum.TryParse<TimePeriod>(period, out var timePeriod))
+        //     {
+        //         return BadRequest("Geçersiz periyod. Geçerli değerler: OneDay, OneWeek, OneMonth, ThreeMonths, SixMonths, OneYear");
+        //     }
 
-            if (topCount < 1 || topCount > 100)
-            {
-                return BadRequest("topCount 1 ile 100 arasında olmalıdır");
-            }
+        //     if (filter.TopCount < 1 || filter.TopCount > 100)
+        //     {
+        //         return BadRequest("topCount 1 ile 100 arasında olmalıdır");
+        //     }
 
-            var result = await _customerReports.GetTopCustomersAsync(timePeriod, topCount);
+        //     var result = await _customerReports.GetTopCustomersAsync(timePeriod, filter);
 
-            if (result == null)
-            {
-                return StatusCode(500, "Veri alınamadı");
-            }
+        //     if (result == null)
+        //     {
+        //         return StatusCode(500, "Veri alınamadı");
+        //     }
 
-            return Ok(new
-            {
-                success = true,
-                count = result.Count,
-                period = period,
-                data = result
-            });
-        }
+        //     return Ok(new
+        //     {
+        //         success = true,
+        //         count = result.Count,
+        //         period = period,
+        //         data = result
+        //     });
+        // }
 
-        [HttpGet("customer-analysis")]
-        public async Task<IActionResult> GetCustomerAnalysis(
-            [FromQuery] string period = "OneYear",
-            [FromQuery] int topCount = 10)
-        {
-            if (!Enum.TryParse<TimePeriod>(period, out var timePeriod))
-            {
-                return BadRequest("Geçersiz periyod");
-            }
+        // [HttpGet("customer-analysis")]
+        // public async Task<IActionResult> GetCustomerAnalysis(
+        //     [FromQuery] string period = "OneYear",
+        //     [FromQuery] ReportFilterModel filter = null)
+        // {
+        //     filter ??= new ReportFilterModel { TopCount = 10 };
+        //     if (!Enum.TryParse<TimePeriod>(period, out var timePeriod))
+        //     {
+        //         return BadRequest("Geçersiz periyod");
+        //     }
 
-            var result = await _customerReports.AnalyzeCustomersAsync(timePeriod, topCount);
-            return Ok(result);
-        }
+        //     var result = await _customerReports.AnalyzeCustomersAsync(timePeriod, filter);
+        //     return Ok(result);
+        // }
 
     }
 }
@@ -289,6 +304,6 @@ namespace ShopifyProductApp.Controllers
 
 ///--> son olarak düzenlenen dosyalar
 /// Karşılaştırmada
-/// http://localhost:5057/api/report/custom?startDate1=2024-12-01&endDate1=2024-12-02&startDate2=2025-12-01&endDate2=2025-12-02&topCount=5
+/// http://localhost:5057/api/report/custom?startDate1=2024-12-01&amp;endDate1=2024-12-02&amp;startDate2=2025-12-01&amp;endDate2=2025-12-02&amp;topCount=5
 /// Veri getirmede
-/// http://localhost:5057/api/report/top-sales-by-date?startDate=2024-12-01&endDate=2024-12-02&topCount=5
+/// http://localhost:5057/api/report/top-sales-by-date?startDate=2024-12-01&amp;endDate=2024-12-02&amp;topCount=5

@@ -18,10 +18,12 @@ public class ExactOrder
     
     // ExactOnline için string formatında tarih gerekli
     public DateTime OrderDate { get; set; }
-    
+    public DateTime? DeliveryDate { get; set; }  // Teslimat tarihi
+
     public string Description { get; set; }
     public int? OrderNumber { get; set; }
     public string Currency { get; set; }
+    public string YourRef { get; set; }
     public Guid? DeliveryAddress { get; set; }
     public int Status { get; set; }
     public int Division { get; set; }

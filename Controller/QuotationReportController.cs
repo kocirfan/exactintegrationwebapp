@@ -1,8 +1,11 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using ExactWebApp.Dto;
 
+[Authorize]
 [ApiController]
 [Route("api/[controller]")]
 public class QuotationReportsController : ControllerBase
@@ -32,8 +35,9 @@ public class QuotationReportsController : ControllerBase
     public async Task<ActionResult<ApiResponse<List<TopProductDTO>>>> GetTopProducts(
         [FromQuery] string startDate,
         [FromQuery] string endDate,
-        [FromQuery] int topCount = 10)
+        [FromQuery] ReportFilterModel filter = null)
     {
+        filter ??= new ReportFilterModel { TopCount = 10 };
         try
         {
             if (!DateTime.TryParse(startDate, out var start) || !DateTime.TryParse(endDate, out var end))
@@ -56,7 +60,7 @@ public class QuotationReportsController : ControllerBase
                 });
             }
 
-            if (topCount <= 0 || topCount > 100)
+            if (filter.TopCount <= 0 || filter.TopCount > 100)
             {
                 return BadRequest(new ApiResponse<List<TopProductDTO>>
                 {
@@ -66,9 +70,9 @@ public class QuotationReportsController : ControllerBase
                 });
             }
 
-            _logger.LogInformation($"📊 Top ürünler istendi: {start:yyyy-MM-dd} - {end:yyyy-MM-dd}, Top: {topCount}");
+            _logger.LogInformation($"📊 Top ürünler istendi: {start:yyyy-MM-dd} - {end:yyyy-MM-dd}, Top: {filter.TopCount}");
 
-            var products = await _quotationReports.GetTopQuotedProductsAsync(start, end, topCount);
+            var products = await _quotationReports.GetTopQuotedProductsAsync(start, end, filter.TopCount, filter);
 
             return Ok(new ApiResponse<List<TopProductDTO>>
             {
@@ -104,8 +108,9 @@ public class QuotationReportsController : ControllerBase
     public async Task<ActionResult<ApiResponse<List<TopCustomerDTO>>>> GetTopCustomers(
         [FromQuery] string startDate,
         [FromQuery] string endDate,
-        [FromQuery] int topCount = 10)
+        [FromQuery] ReportFilterModel filter = null)
     {
+        filter ??= new ReportFilterModel { TopCount = 10 };
         try
         {
             if (!DateTime.TryParse(startDate, out var start) || !DateTime.TryParse(endDate, out var end))
@@ -128,7 +133,7 @@ public class QuotationReportsController : ControllerBase
                 });
             }
 
-            if (topCount <= 0 || topCount > 100)
+            if (filter.TopCount <= 0 || filter.TopCount > 100)
             {
                 return BadRequest(new ApiResponse<List<TopCustomerDTO>>
                 {
@@ -138,9 +143,9 @@ public class QuotationReportsController : ControllerBase
                 });
             }
 
-            _logger.LogInformation($"📊 Top müşteriler istendi: {start:yyyy-MM-dd} - {end:yyyy-MM-dd}, Top: {topCount}");
+            _logger.LogInformation($"📊 Top müşteriler istendi: {start:yyyy-MM-dd} - {end:yyyy-MM-dd}, Top: {filter.TopCount}");
 
-            var customers = await _quotationReports.GetTopQuotedCustomersAsync(start, end, topCount);
+            var customers = await _quotationReports.GetTopQuotedCustomersAsync(start, end, filter.TopCount, filter);
 
             return Ok(new ApiResponse<List<TopCustomerDTO>>
             {
@@ -162,32 +167,105 @@ public class QuotationReportsController : ControllerBase
         }
     }
 
+    // /// <summary>
+    // /// İki tarih aralığında ürünleri karşılaştırır
+    // /// </summary>
+    // /// <param name="startDate1">Period 1 - Başlangıç tarihi (YYYY-MM-DD)</param>
+    // /// <param name="endDate1">Period 1 - Bitiş tarihi (YYYY-MM-DD)</param>
+    // /// <param name="startDate2">Period 2 - Başlangıç tarihi (YYYY-MM-DD)</param>
+    // /// <param name="endDate2">Period 2 - Bitiş tarihi (YYYY-MM-DD)</param>
+    // /// <param name="topCount">Kaç tane ürün gösterilecek (varsayılan: 10)</param>
+    // /// <returns>Karşılaştırılmış ürün verileri</returns>
+    // [HttpGet("compare-products")]
+    // [ProducesResponseType(StatusCodes.Status200OK)]
+    // [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    // [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+    // public async Task<ActionResult<ApiResponse<ComparisonProductResultDTO>>> CompareProducts(
+    //     [FromQuery] string startDate1,
+    //     [FromQuery] string endDate1,
+    //     [FromQuery] string startDate2,
+    //     [FromQuery] string endDate2,
+    //     [FromQuery] ReportFilterModel filter = null)
+    // {
+    //     filter ??= new ReportFilterModel { TopCount = 10 };
+    //     try
+    //     {
+    //         if (!DateTime.TryParse(startDate1, out var start1) || !DateTime.TryParse(endDate1, out var end1) ||
+    //             !DateTime.TryParse(startDate2, out var start2) || !DateTime.TryParse(endDate2, out var end2))
+    //         {
+    //             return BadRequest(new ApiResponse<ComparisonProductResultDTO>
+    //             {
+    //                 Success = false,
+    //                 Message = "Geçersiz tarih formatı. YYYY-MM-DD formatını kullanın.",
+    //                 Data = null
+    //             });
+    //         }
+
+    //         if (start1 > end1 || start2 > end2)
+    //         {
+    //             return BadRequest(new ApiResponse<ComparisonProductResultDTO>
+    //             {
+    //                 Success = false,
+    //                 Message = "Başlangıç tarihleri bitiş tarihlerinden önce olmalıdır.",
+    //                 Data = null
+    //             });
+    //         }
+
+    //         if (filter.TopCount <= 0 || filter.TopCount > 100)
+    //         {
+    //             return BadRequest(new ApiResponse<ComparisonProductResultDTO>
+    //             {
+    //                 Success = false,
+    //                 Message = "topCount değeri 1 ile 100 arasında olmalıdır.",
+    //                 Data = null
+    //             });
+    //         }
+
+    //         _logger.LogInformation($"📊 Ürün karşılaştırması: P1({start1:yyyy-MM-dd}-{end1:yyyy-MM-dd}) vs P2({start2:yyyy-MM-dd}-{end2:yyyy-MM-dd})");
+
+    //         var result = await _quotationReports.CompareProductsByDateRangeAsync(start1, end1, start2, end2, filter.TopCount, filter);
+
+    //         return Ok(new ApiResponse<ComparisonProductResultDTO>
+    //         {
+    //             Success = true,
+    //             Message = $"{result.TotalProducts} ürün karşılaştırıldı. Yeni: {result.NewProducts}, Çıkarılan: {result.RemovedProducts}, Artan: {result.IncreasedProducts}, Azalan: {result.DecreasedProducts}",
+    //             Data = result
+    //         });
+    //     }
+    //     catch (Exception ex)
+    //     {
+    //         _logger.LogError($"❌ Ürün karşılaştırması hatası: {ex.Message}");
+    //         return StatusCode(500, new ApiResponse<ComparisonProductResultDTO>
+    //         {
+    //             Success = false,
+    //             Message = "Sunucu hatası oluştu",
+    //             Data = null,
+    //             Error = ex.Message
+    //         });
+    //     }
+    // }
+
     /// <summary>
-    /// İki tarih aralığında ürünleri karşılaştırır
+    /// İki tarih aralığında ürünleri detaylı karşılaştırır
     /// </summary>
-    /// <param name="startDate1">Period 1 - Başlangıç tarihi (YYYY-MM-DD)</param>
-    /// <param name="endDate1">Period 1 - Bitiş tarihi (YYYY-MM-DD)</param>
-    /// <param name="startDate2">Period 2 - Başlangıç tarihi (YYYY-MM-DD)</param>
-    /// <param name="endDate2">Period 2 - Bitiş tarihi (YYYY-MM-DD)</param>
-    /// <param name="topCount">Kaç tane ürün gösterilecek (varsayılan: 10)</param>
-    /// <returns>Karşılaştırılmış ürün verileri</returns>
     [HttpGet("compare-products")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-    public async Task<ActionResult<ApiResponse<ComparisonProductResultDTO>>> CompareProducts(
+    public async Task<ActionResult<ApiResponse<DetailedProductComparisonResponseDTO>>> CompareProductsDetailed(
         [FromQuery] string startDate1,
         [FromQuery] string endDate1,
         [FromQuery] string startDate2,
         [FromQuery] string endDate2,
-        [FromQuery] int topCount = 10)
+        [FromQuery] ReportFilterModel filter = null)
     {
+        filter ??= new ReportFilterModel { TopCount = 10 };
         try
         {
             if (!DateTime.TryParse(startDate1, out var start1) || !DateTime.TryParse(endDate1, out var end1) ||
                 !DateTime.TryParse(startDate2, out var start2) || !DateTime.TryParse(endDate2, out var end2))
             {
-                return BadRequest(new ApiResponse<ComparisonProductResultDTO>
+                return BadRequest(new ApiResponse<DetailedProductComparisonResponseDTO>
                 {
                     Success = false,
                     Message = "Geçersiz tarih formatı. YYYY-MM-DD formatını kullanın.",
@@ -195,41 +273,21 @@ public class QuotationReportsController : ControllerBase
                 });
             }
 
-            if (start1 > end1 || start2 > end2)
-            {
-                return BadRequest(new ApiResponse<ComparisonProductResultDTO>
-                {
-                    Success = false,
-                    Message = "Başlangıç tarihleri bitiş tarihlerinden önce olmalıdır.",
-                    Data = null
-                });
-            }
+            _logger.LogInformation($"📊 Detaylı ürün karşılaştırması: P1({start1:yyyy-MM-dd}-{end1:yyyy-MM-dd}) vs P2({start2:yyyy-MM-dd}-{end2:yyyy-MM-dd})");
 
-            if (topCount <= 0 || topCount > 100)
-            {
-                return BadRequest(new ApiResponse<ComparisonProductResultDTO>
-                {
-                    Success = false,
-                    Message = "topCount değeri 1 ile 100 arasında olmalıdır.",
-                    Data = null
-                });
-            }
+            var result = await _quotationReports.CompareProductsByDateRangeDetailedAsync(start1, end1, start2, end2, filter.TopCount, filter);
 
-            _logger.LogInformation($"📊 Ürün karşılaştırması: P1({start1:yyyy-MM-dd}-{end1:yyyy-MM-dd}) vs P2({start2:yyyy-MM-dd}-{end2:yyyy-MM-dd})");
-
-            var result = await _quotationReports.CompareProductsByDateRangeAsync(start1, end1, start2, end2, topCount);
-
-            return Ok(new ApiResponse<ComparisonProductResultDTO>
+            return Ok(new ApiResponse<DetailedProductComparisonResponseDTO>
             {
                 Success = true,
-                Message = $"{result.TotalProducts} ürün karşılaştırıldı. Yeni: {result.NewProducts}, Çıkarılan: {result.RemovedProducts}, Artan: {result.IncreasedProducts}, Azalan: {result.DecreasedProducts}",
+                Message = result.Message,
                 Data = result
             });
         }
         catch (Exception ex)
         {
-            _logger.LogError($"❌ Ürün karşılaştırması hatası: {ex.Message}");
-            return StatusCode(500, new ApiResponse<ComparisonProductResultDTO>
+            _logger.LogError($"❌ Detaylı ürün karşılaştırması hatası: {ex.Message}");
+            return StatusCode(500, new ApiResponse<DetailedProductComparisonResponseDTO>
             {
                 Success = false,
                 Message = "Sunucu hatası oluştu",
@@ -239,32 +297,105 @@ public class QuotationReportsController : ControllerBase
         }
     }
 
+    // /// <summary>
+    // /// İki tarih aralığında müşterileri karşılaştırır
+    // /// </summary>
+    // /// <param name="startDate1">Period 1 - Başlangıç tarihi (YYYY-MM-DD)</param>
+    // /// <param name="endDate1">Period 1 - Bitiş tarihi (YYYY-MM-DD)</param>
+    // /// <param name="startDate2">Period 2 - Başlangıç tarihi (YYYY-MM-DD)</param>
+    // /// <param name="endDate2">Period 2 - Bitiş tarihi (YYYY-MM-DD)</param>
+    // /// <param name="topCount">Kaç tane müşteri gösterilecek (varsayılan: 10)</param>
+    // /// <returns>Karşılaştırılmış müşteri verileri</returns>
+    // [HttpGet("compare-customers")]
+    // [ProducesResponseType(StatusCodes.Status200OK)]
+    // [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    // [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+    // public async Task<ActionResult<ApiResponse<ComparisonCustomerResultDTO>>> CompareCustomers(
+    //     [FromQuery] string startDate1,
+    //     [FromQuery] string endDate1,
+    //     [FromQuery] string startDate2,
+    //     [FromQuery] string endDate2,
+    //     [FromQuery] ReportFilterModel filter = null)
+    // {
+    //     filter ??= new ReportFilterModel { TopCount = 10 };
+    //     try
+    //     {
+    //         if (!DateTime.TryParse(startDate1, out var start1) || !DateTime.TryParse(endDate1, out var end1) ||
+    //             !DateTime.TryParse(startDate2, out var start2) || !DateTime.TryParse(endDate2, out var end2))
+    //         {
+    //             return BadRequest(new ApiResponse<ComparisonCustomerResultDTO>
+    //             {
+    //                 Success = false,
+    //                 Message = "Geçersiz tarih formatı. YYYY-MM-DD formatını kullanın.",
+    //                 Data = null
+    //             });
+    //         }
+
+    //         if (start1 > end1 || start2 > end2)
+    //         {
+    //             return BadRequest(new ApiResponse<ComparisonCustomerResultDTO>
+    //             {
+    //                 Success = false,
+    //                 Message = "Başlangıç tarihleri bitiş tarihlerinden önce olmalıdır.",
+    //                 Data = null
+    //             });
+    //         }
+
+    //         if (filter.TopCount <= 0 || filter.TopCount > 100)
+    //         {
+    //             return BadRequest(new ApiResponse<ComparisonCustomerResultDTO>
+    //             {
+    //                 Success = false,
+    //                 Message = "topCount değeri 1 ile 100 arasında olmalıdır.",
+    //                 Data = null
+    //             });
+    //         }
+
+    //         _logger.LogInformation($"📊 Müşteri karşılaştırması: P1({start1:yyyy-MM-dd}-{end1:yyyy-MM-dd}) vs P2({start2:yyyy-MM-dd}-{end2:yyyy-MM-dd})");
+
+    //         var result = await _quotationReports.CompareCustomersByDateRangeAsync(start1, end1, start2, end2, filter.TopCount, filter);
+
+    //         return Ok(new ApiResponse<ComparisonCustomerResultDTO>
+    //         {
+    //             Success = true,
+    //             Message = $"{result.TotalCustomers} müşteri karşılaştırıldı. Yeni: {result.NewCustomers}, Kaybedilen: {result.LostCustomers}, Artan: {result.IncreasingCustomers}, Azalan: {result.DecreasingCustomers}",
+    //             Data = result
+    //         });
+    //     }
+    //     catch (Exception ex)
+    //     {
+    //         _logger.LogError($"❌ Müşteri karşılaştırması hatası: {ex.Message}");
+    //         return StatusCode(500, new ApiResponse<ComparisonCustomerResultDTO>
+    //         {
+    //             Success = false,
+    //             Message = "Sunucu hatası oluştu",
+    //             Data = null,
+    //             Error = ex.Message
+    //         });
+    //     }
+    // }
+
     /// <summary>
-    /// İki tarih aralığında müşterileri karşılaştırır
+    /// İki tarih aralığında müşterileri detaylı karşılaştırır
     /// </summary>
-    /// <param name="startDate1">Period 1 - Başlangıç tarihi (YYYY-MM-DD)</param>
-    /// <param name="endDate1">Period 1 - Bitiş tarihi (YYYY-MM-DD)</param>
-    /// <param name="startDate2">Period 2 - Başlangıç tarihi (YYYY-MM-DD)</param>
-    /// <param name="endDate2">Period 2 - Bitiş tarihi (YYYY-MM-DD)</param>
-    /// <param name="topCount">Kaç tane müşteri gösterilecek (varsayılan: 10)</param>
-    /// <returns>Karşılaştırılmış müşteri verileri</returns>
     [HttpGet("compare-customers")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-    public async Task<ActionResult<ApiResponse<ComparisonCustomerResultDTO>>> CompareCustomers(
+    public async Task<ActionResult<ApiResponse<DetailedCustomerComparisonResponseDTO>>> CompareCustomersDetailed(
         [FromQuery] string startDate1,
         [FromQuery] string endDate1,
         [FromQuery] string startDate2,
         [FromQuery] string endDate2,
-        [FromQuery] int topCount = 10)
+        [FromQuery] ReportFilterModel filter = null)
     {
+        filter ??= new ReportFilterModel { TopCount = 10 };
         try
         {
             if (!DateTime.TryParse(startDate1, out var start1) || !DateTime.TryParse(endDate1, out var end1) ||
                 !DateTime.TryParse(startDate2, out var start2) || !DateTime.TryParse(endDate2, out var end2))
             {
-                return BadRequest(new ApiResponse<ComparisonCustomerResultDTO>
+                return BadRequest(new ApiResponse<DetailedCustomerComparisonResponseDTO>
                 {
                     Success = false,
                     Message = "Geçersiz tarih formatı. YYYY-MM-DD formatını kullanın.",
@@ -272,41 +403,21 @@ public class QuotationReportsController : ControllerBase
                 });
             }
 
-            if (start1 > end1 || start2 > end2)
-            {
-                return BadRequest(new ApiResponse<ComparisonCustomerResultDTO>
-                {
-                    Success = false,
-                    Message = "Başlangıç tarihleri bitiş tarihlerinden önce olmalıdır.",
-                    Data = null
-                });
-            }
+            _logger.LogInformation($"📊 Detaylı müşteri karşılaştırması: P1({start1:yyyy-MM-dd}-{end1:yyyy-MM-dd}) vs P2({start2:yyyy-MM-dd}-{end2:yyyy-MM-dd})");
 
-            if (topCount <= 0 || topCount > 100)
-            {
-                return BadRequest(new ApiResponse<ComparisonCustomerResultDTO>
-                {
-                    Success = false,
-                    Message = "topCount değeri 1 ile 100 arasında olmalıdır.",
-                    Data = null
-                });
-            }
+            var result = await _quotationReports.CompareCustomersByDateRangeDetailedAsync(start1, end1, start2, end2, filter.TopCount, filter);
 
-            _logger.LogInformation($"📊 Müşteri karşılaştırması: P1({start1:yyyy-MM-dd}-{end1:yyyy-MM-dd}) vs P2({start2:yyyy-MM-dd}-{end2:yyyy-MM-dd})");
-
-            var result = await _quotationReports.CompareCustomersByDateRangeAsync(start1, end1, start2, end2, topCount);
-
-            return Ok(new ApiResponse<ComparisonCustomerResultDTO>
+            return Ok(new ApiResponse<DetailedCustomerComparisonResponseDTO>
             {
                 Success = true,
-                Message = $"{result.TotalCustomers} müşteri karşılaştırıldı. Yeni: {result.NewCustomers}, Kaybedilen: {result.LostCustomers}, Artan: {result.IncreasingCustomers}, Azalan: {result.DecreasingCustomers}",
+                Message = result.Message,
                 Data = result
             });
         }
         catch (Exception ex)
         {
-            _logger.LogError($"❌ Müşteri karşılaştırması hatası: {ex.Message}");
-            return StatusCode(500, new ApiResponse<ComparisonCustomerResultDTO>
+            _logger.LogError($"❌ Detaylı müşteri karşılaştırması hatası: {ex.Message}");
+            return StatusCode(500, new ApiResponse<DetailedCustomerComparisonResponseDTO>
             {
                 Success = false,
                 Message = "Sunucu hatası oluştu",
@@ -354,7 +465,7 @@ public class QuotationReportsController : ControllerBase
 
             _logger.LogInformation($"📊 Tüm teklifler istendi: {start:yyyy-MM-dd} - {end:yyyy-MM-dd}");
 
-            var quotations = await _quotationReports.GetQuotationReportAsync(start, end);
+            var quotations = await _quotationReports.GetQuotationReportNewAsync(start, end);
 
             return Ok(new ApiResponse<object>
             {

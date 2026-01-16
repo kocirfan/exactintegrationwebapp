@@ -4,9 +4,11 @@ using ShopifyProductApp.Services;
 using Newtonsoft.Json;
 using System.Text;
 using ExactOnline.Models;
+using Microsoft.AspNetCore.Authorization;
 
 namespace ShopifyProductApp.Controllers
 {
+    [Authorize]
     [ApiController]
     [Route("api/[controller]")]
     public class ProductsController : ControllerBase
@@ -1047,7 +1049,23 @@ namespace ShopifyProductApp.Controllers
             }
         }
 
-        
+
+        //bir müşterinin adreslerini getir
+        [HttpGet("exact-customer-addresses")]
+        public async Task<IActionResult> GetCustomerAddresses([FromQuery] string customerId)
+        {
+            if (string.IsNullOrEmpty(customerId))
+            {
+                return BadRequest("customerId parametresi gereklidir");
+            }
+            else
+            {
+                var addresses = await _exactAddressCrud.GetCustomerDeliveryAddresses(customerId);
+                return Ok(addresses);
+            }
+            
+
+        }
     }
 
     // ✅ Cache veri modeli

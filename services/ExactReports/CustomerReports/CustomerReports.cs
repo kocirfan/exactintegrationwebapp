@@ -1,3 +1,1810 @@
+// using System.Text.Json;
+// using System.Text.Json.Serialization;
+// using System.Net.Http.Headers;
+// using ShopifyProductApp.Services;
+// using System.Text;
+// using ExactOnline.Models;
+// using ExactOnline.Converters;
+// using System.Text.RegularExpressions;
+// using Microsoft.Extensions.Configuration;
+// using ExactWebApp.Dto;
+
+// public class CustomerReports
+// {
+//     private readonly string _clientId;
+//     private readonly string _clientSecret;
+//     private readonly IServiceProvider _serviceProvider;
+//     private readonly string _redirectUri;
+//     private readonly ITokenManager _tokenManager;
+//     private readonly string _baseUrl;
+//     private readonly string _divisionCode;
+//     private readonly ILogger _logger;
+//     private readonly string _tokenFile;
+//     private readonly ISettingsService _settingsService;
+
+
+//     public CustomerReports(
+//     string clientId,
+//     string clientSecret,
+//     string redirectUri,
+//     ITokenManager tokenManager,
+//     string baseUrl,
+//     string divisionCode,
+//     string tokenFile,
+//     ISettingsService settingsService,
+//     IServiceProvider serviceProvider,
+//     ILogger logger)
+//     {
+//         _clientId = clientId;
+//         _clientSecret = clientSecret;
+//         _redirectUri = redirectUri;
+//         _tokenManager = tokenManager;
+//         _baseUrl = baseUrl;
+//         _divisionCode = divisionCode;
+//         _tokenFile = tokenFile;
+//         _settingsService = settingsService;
+//         _serviceProvider = serviceProvider;
+//         _logger = logger;
+//     }
+
+
+//     //tarih ile
+//      public async Task<List<TopCustomerDto>> GetTopCustomersDateRangeAsync(
+//         DateTime startDate,
+//         DateTime endDate,
+//         ReportFilterModel filter = null)
+//     {
+//         int topCount = filter?.TopCount ?? 5;
+//         try
+//         {
+//             _logger.LogInformation($"👥 Top {topCount} Müşteri Çıkartılıyor - Periyod: {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}");
+
+//             // ExactSalesReports'u kullan
+//             var rawOrdersJson = await GetSalesOrderByDateRangeAsync(startDate, endDate);
+
+//             if (rawOrdersJson == "[]")
+//             {
+//                 _logger.LogWarning("⚠️ Sipariş verisi alınamadı");
+//                 return new List<TopCustomerDto>();
+//             }
+
+//             using var doc = JsonDocument.Parse(rawOrdersJson);
+//             var customerData = new Dictionary<string, CustomerSalesData>();
+
+//             if (!doc.RootElement.TryGetProperty("d", out var dataElement))
+//             {
+//                 _logger.LogError("❌ Beklenmeyen JSON yapısı: 'd' property bulunamadı");
+//                 return null;
+//             }
+
+//             JsonElement resultsElement;
+//             if (dataElement.ValueKind == JsonValueKind.Object &&
+//                 dataElement.TryGetProperty("results", out var res))
+//             {
+//                 resultsElement = res;
+//             }
+//             else if (dataElement.ValueKind == JsonValueKind.Array)
+//             {
+//                 resultsElement = dataElement;
+//             }
+//             else
+//             {
+//                 _logger.LogError("❌ Beklenmeyen JSON yapısı");
+//                 return null;
+//             }
+
+//             var orderCount = 0;
+
+//             foreach (var salesOrder in resultsElement.EnumerateArray())
+//             {
+//                 orderCount++;
+
+//                 // DeliverToName'i al
+//                 var customerName = salesOrder.TryGetProperty("DeliverToName", out var name)
+//                     ? name.GetString() ?? "Bilinmeyen Müşteri"
+//                     : "Bilinmeyen Müşteri";
+
+//                 // Sipariş tutarını al
+//                 double orderAmount = 0;
+//                 if (salesOrder.TryGetProperty("AmountDC", out var amount))
+//                 {
+//                     orderAmount = SanitizeDouble(amount.GetDouble());
+//                 }
+//                 else if (salesOrder.TryGetProperty("AmountFC", out var topAmount))
+//                 {
+//                     orderAmount = SanitizeDouble(topAmount.GetDouble());
+//                 }
+
+//                 if (string.IsNullOrWhiteSpace(customerName) || customerName == "Bilinmeyen Müşteri")
+//                 {
+//                     _logger.LogWarning($"⚠️ Sipariş {orderCount}: Müşteri adı boş");
+//                     continue;
+//                 }
+
+//                 if (customerData.ContainsKey(customerName))
+//                 {
+//                     customerData[customerName].TotalOrderAmount += orderAmount;
+//                     customerData[customerName].OrderCount++;
+//                     customerData[customerName].AverageOrderAmount =
+//                         customerData[customerName].TotalOrderAmount / customerData[customerName].OrderCount;
+//                 }
+//                 else
+//                 {
+//                     customerData[customerName] = new CustomerSalesData
+//                     {
+//                         CustomerName = customerName,
+//                         TotalOrderAmount = orderAmount,
+//                         OrderCount = 1,
+//                         AverageOrderAmount = orderAmount
+//                     };
+//                 }
+//             }
+
+//             if (!customerData.Any())
+//             {
+//                 _logger.LogWarning("⚠️ Müşteri verisi bulunamadı");
+//                 return new List<TopCustomerDto>();
+//             }
+
+//             // Apply filters
+//             var filteredData = customerData.Values.AsEnumerable();
+
+//             if (filter != null)
+//             {
+//                 if (filter.CustomerNames != null && filter.CustomerNames.Any())
+//                 {
+//                     filteredData = filteredData.Where(c => filter.CustomerNames.Contains(c.CustomerName));
+//                 }
+
+//                 if (!string.IsNullOrEmpty(filter.SearchTerm))
+//                 {
+//                     filteredData = filteredData.Where(c => c.CustomerName.Contains(filter.SearchTerm, StringComparison.OrdinalIgnoreCase));
+//                 }
+
+//                 if (filter.MinAmount.HasValue)
+//                 {
+//                     filteredData = filteredData.Where(c => c.TotalOrderAmount >= filter.MinAmount.Value);
+//                 }
+
+//                 if (filter.MaxAmount.HasValue)
+//                 {
+//                     filteredData = filteredData.Where(c => c.TotalOrderAmount <= filter.MaxAmount.Value);
+//                 }
+//             }
+
+//             var totalSalesAmount = customerData.Values.Sum(x => x.TotalOrderAmount);
+
+//             var topCustomers = filteredData
+//                 .OrderByDescending(x => x.OrderCount)
+//                 .ThenByDescending(x => x.TotalOrderAmount)
+//                 .Take(topCount)
+//                 .Select((c, index) => new TopCustomerDto
+//                 {
+//                     Rank = index + 1,
+//                     CustomerName = c.CustomerName,
+//                     TotalOrders = c.OrderCount,
+//                     TotalOrderAmount = SanitizeDouble(c.TotalOrderAmount),
+//                     AverageOrderAmount = SanitizeDouble(c.AverageOrderAmount),
+//                     PercentageOfTotalSales = SanitizeDouble((c.TotalOrderAmount / totalSalesAmount) * 100)
+//                 })
+//                 .ToList();
+
+//             _logger.LogInformation($"✅ {orderCount} sipariş işlendi, {customerData.Count} farklı müşteri bulundu");
+//             _logger.LogInformation($"✅ Top {topCustomers.Count} müşteri listelendi");
+//             _logger.LogInformation($"💰 Toplam Satış Tutarı: ₺{SanitizeDouble(totalSalesAmount):N2}");
+
+//             return topCustomers;
+//         }
+//         catch (Exception ex)
+//         {
+//             _logger.LogError($"❌ Müşteri analiz hatası: {ex.Message}");
+//             return null;
+//         }
+//     }
+
+//     /// <summary>
+//     /// Belirtilen zaman aralığında en çok sipariş veren müşterileri getirir
+//     /// </summary>
+//     public async Task<List<TopCustomerDto>> GetTopCustomersAsync(
+//         TimePeriod period = TimePeriod.OneYear,
+//         ReportFilterModel filter = null)
+//     {
+//         int topCount = filter?.TopCount ?? 5;
+//         try
+//         {
+//             _logger.LogInformation($"👥 Top {topCount} Müşteri Çıkartılıyor - Periyod: {period}");
+
+//             // ExactSalesReports'u kullan
+//             var rawOrdersJson = await GetAllSalesOrderAsync(period);
+
+//             if (rawOrdersJson == "[]")
+//             {
+//                 _logger.LogWarning("⚠️ Sipariş verisi alınamadı");
+//                 return new List<TopCustomerDto>();
+//             }
+
+//             using var doc = JsonDocument.Parse(rawOrdersJson);
+//             var customerData = new Dictionary<string, CustomerSalesData>();
+
+//             if (!doc.RootElement.TryGetProperty("d", out var dataElement))
+//             {
+//                 _logger.LogError("❌ Beklenmeyen JSON yapısı: 'd' property bulunamadı");
+//                 return null;
+//             }
+
+//             JsonElement resultsElement;
+//             if (dataElement.ValueKind == JsonValueKind.Object &&
+//                 dataElement.TryGetProperty("results", out var res))
+//             {
+//                 resultsElement = res;
+//             }
+//             else if (dataElement.ValueKind == JsonValueKind.Array)
+//             {
+//                 resultsElement = dataElement;
+//             }
+//             else
+//             {
+//                 _logger.LogError("❌ Beklenmeyen JSON yapısı");
+//                 return null;
+//             }
+
+//             var orderCount = 0;
+
+//             foreach (var salesOrder in resultsElement.EnumerateArray())
+//             {
+//                 orderCount++;
+
+//                 // DeliverToName'i al
+//                 var customerName = salesOrder.TryGetProperty("DeliverToName", out var name)
+//                     ? name.GetString() ?? "Bilinmeyen Müşteri"
+//                     : "Bilinmeyen Müşteri";
+
+//                 // Sipariş tutarını al
+//                 double orderAmount = 0;
+//                 if (salesOrder.TryGetProperty("AmountDC", out var amount))
+//                 {
+//                     orderAmount = SanitizeDouble(amount.GetDouble());
+//                 }
+//                 else if (salesOrder.TryGetProperty("AmountFC", out var topAmount))
+//                 {
+//                     orderAmount = SanitizeDouble(topAmount.GetDouble());
+//                 }
+
+//                 if (string.IsNullOrWhiteSpace(customerName) || customerName == "Bilinmeyen Müşteri")
+//                 {
+//                     _logger.LogWarning($"⚠️ Sipariş {orderCount}: Müşteri adı boş");
+//                     continue;
+//                 }
+
+//                 if (customerData.ContainsKey(customerName))
+//                 {
+//                     customerData[customerName].TotalOrderAmount += orderAmount;
+//                     customerData[customerName].OrderCount++;
+//                     customerData[customerName].AverageOrderAmount =
+//                         customerData[customerName].TotalOrderAmount / customerData[customerName].OrderCount;
+//                 }
+//                 else
+//                 {
+//                     customerData[customerName] = new CustomerSalesData
+//                     {
+//                         CustomerName = customerName,
+//                         TotalOrderAmount = orderAmount,
+//                         OrderCount = 1,
+//                         AverageOrderAmount = orderAmount
+//                     };
+//                 }
+//             }
+
+//             if (!customerData.Any())
+//             {
+//                 _logger.LogWarning("⚠️ Müşteri verisi bulunamadı");
+//                 return new List<TopCustomerDto>();
+//             }
+
+//             // Apply filters
+//             var filteredData = customerData.Values.AsEnumerable();
+
+//             if (filter != null)
+//             {
+//                 if (filter.CustomerNames != null && filter.CustomerNames.Any())
+//                 {
+//                     filteredData = filteredData.Where(c => filter.CustomerNames.Contains(c.CustomerName));
+//                 }
+
+//                 if (!string.IsNullOrEmpty(filter.SearchTerm))
+//                 {
+//                     filteredData = filteredData.Where(c => c.CustomerName.Contains(filter.SearchTerm, StringComparison.OrdinalIgnoreCase));
+//                 }
+
+//                 if (filter.MinAmount.HasValue)
+//                 {
+//                     filteredData = filteredData.Where(c => c.TotalOrderAmount >= filter.MinAmount.Value);
+//                 }
+
+//                 if (filter.MaxAmount.HasValue)
+//                 {
+//                     filteredData = filteredData.Where(c => c.TotalOrderAmount <= filter.MaxAmount.Value);
+//                 }
+//             }
+
+//             var totalSalesAmount = customerData.Values.Sum(x => x.TotalOrderAmount);
+
+//             var topCustomers = filteredData
+//                 .OrderByDescending(x => x.OrderCount)
+//                 .ThenByDescending(x => x.TotalOrderAmount)
+//                 .Take(topCount)
+//                 .Select((c, index) => new TopCustomerDto
+//                 {
+//                     Rank = index + 1,
+//                     CustomerName = c.CustomerName,
+//                     TotalOrders = c.OrderCount,
+//                     TotalOrderAmount = SanitizeDouble(c.TotalOrderAmount),
+//                     AverageOrderAmount = SanitizeDouble(c.AverageOrderAmount),
+//                     PercentageOfTotalSales = SanitizeDouble((c.TotalOrderAmount / totalSalesAmount) * 100)
+//                 })
+//                 .ToList();
+
+//             _logger.LogInformation($"✅ {orderCount} sipariş işlendi, {customerData.Count} farklı müşteri bulundu");
+//             _logger.LogInformation($"✅ Top {topCustomers.Count} müşteri listelendi");
+//             _logger.LogInformation($"💰 Toplam Satış Tutarı: ₺{SanitizeDouble(totalSalesAmount):N2}");
+
+//             return topCustomers;
+//         }
+//         catch (Exception ex)
+//         {
+//             _logger.LogError($"❌ Müşteri analiz hatası: {ex.Message}");
+//             return null;
+//         }
+//     }
+
+//     /// <summary>
+//     /// Belirtilen zaman aralığında müşteri performansını analiz eder
+//     /// </summary>
+//     public async Task<CustomerAnalysisDto> AnalyzeCustomersAsync(
+//         TimePeriod period = TimePeriod.OneYear,
+//         ReportFilterModel filter = null)
+//     {
+//         int topCustomerCount = filter?.TopCount ?? 5;
+//         try
+//         {
+//             var topCustomers = await GetTopCustomersAsync(period, filter);
+
+//             if (topCustomers == null || !topCustomers.Any())
+//             {
+//                 return new CustomerAnalysisDto
+//                 {
+//                     Success = false,
+//                     Message = "Müşteri verisi alınamadı"
+//                 };
+//             }
+
+//             var totalOrders = topCustomers.Sum(x => x.TotalOrders);
+//             var totalAmount = topCustomers.Sum(x => x.TotalOrderAmount);
+//             var averageOrderAmount = topCustomers.Average(x => x.AverageOrderAmount);
+//             var averageCustomerValue = totalAmount / topCustomers.Count;
+
+//             return new CustomerAnalysisDto
+//             {
+//                 Success = true,
+//                 Period = period.ToString(),
+//                 TopCustomerCount = topCustomerCount,
+//                 TotalCustomerCount = topCustomers.Count,
+//                 TotalOrderCount = totalOrders,
+//                 TotalSalesAmount = SanitizeDouble(totalAmount),
+//                 AverageOrderAmount = SanitizeDouble(averageOrderAmount),
+//                 AverageCustomerValue = SanitizeDouble(averageCustomerValue),
+//                 TopCustomers = topCustomers,
+//                 Message = $"✅ Müşteri analizi başarılı - {topCustomers.Count} müşteri bulundu"
+//             };
+//         }
+//         catch (Exception ex)
+//         {
+//             _logger.LogError($"❌ Müşteri analizi hatası: {ex.Message}");
+//             return new CustomerAnalysisDto
+//             {
+//                 Success = false,
+//                 Message = $"Hata oluştu: {ex.Message}"
+//             };
+//         }
+//     }
+//     private List<CustomerComparisonDetailDto> CompareCustomerLists(
+//         List<TopCustomerDto> currentCustomers,
+//         List<TopCustomerDto> previousCustomers)
+//     {
+//         var comparisons = new List<CustomerComparisonDetailDto>();
+
+//         // Müşteriler için dictionary oluştur
+//         var previousDict = previousCustomers
+//             .ToDictionary(x => x.CustomerName, x => x);
+
+//         foreach (var current in currentCustomers)
+//         {
+//             var comparison = new CustomerComparisonDetailDto
+//             {
+//                 CustomerName = current.CustomerName,
+//                 CurrentRank = current.Rank,
+//                 CurrentOrders = current.TotalOrders,
+//                 CurrentAmount = SanitizeDouble(current.TotalOrderAmount),
+//                 CurrentPercentage = SanitizeDouble(current.PercentageOfTotalSales)
+//             };
+
+//             if (previousDict.TryGetValue(current.CustomerName, out var previous))
+//             {
+//                 comparison.PreviousRank = previous.Rank;
+//                 comparison.PreviousOrders = previous.TotalOrders;
+//                 comparison.PreviousAmount = SanitizeDouble(previous.TotalOrderAmount);
+//                 comparison.PreviousPercentage = SanitizeDouble(previous.PercentageOfTotalSales);
+
+//                 // Farklılıkları hesapla
+//                 comparison.RankChange = previous.Rank - current.Rank; // Negatif = düştü, pozitif = yükseldi
+//                 comparison.OrderChange = current.TotalOrders - previous.TotalOrders;
+//                 comparison.AmountChange = SanitizeDouble(current.TotalOrderAmount - previous.TotalOrderAmount);
+//                 comparison.AmountChangePercent = previous.TotalOrderAmount > 0
+//                     ? (comparison.AmountChange / previous.TotalOrderAmount) * 100
+//                     : 0;
+//                 comparison.Status = GetCustomerStatus(comparison.OrderChange, comparison.AmountChange);
+//             }
+//             else
+//             {
+//                 comparison.Status = "🆕 Yeni"; // Yeni müşteri
+//             }
+
+//             comparisons.Add(comparison);
+//         }
+
+//         // Önceki dönemde var ama şimdiki dönemde top'ta olmayan müşteriler
+//         foreach (var previous in previousCustomers)
+//         {
+//             if (!currentCustomers.Any(x => x.CustomerName == previous.CustomerName))
+//             {
+//                 comparisons.Add(new CustomerComparisonDetailDto
+//                 {
+//                     CustomerName = previous.CustomerName,
+//                     PreviousRank = previous.Rank,
+//                     PreviousOrders = previous.TotalOrders,
+//                     PreviousAmount = SanitizeDouble(previous.TotalOrderAmount),
+//                     PreviousPercentage = SanitizeDouble(previous.PercentageOfTotalSales),
+//                     Status = "❌ Çıktı" // Top'tan çıktı
+//                 });
+//             }
+//         }
+
+//         return comparisons.OrderBy(x => x.CurrentRank ?? x.PreviousRank).ToList();
+//     }
+//     public async Task<CustomerComparisonAnalysisDto> ComparePeriodsAsync(
+//        TimePeriod currentPeriod = TimePeriod.OneMonth,
+//        TimePeriod previousPeriod = TimePeriod.OneMonth,
+//        ReportFilterModel filter = null)
+//     {
+//         int topCount = filter?.TopCount ?? 5;
+//         try
+//         {
+//             _logger.LogInformation($"📊 Periyod Karşılaştırması Başlatılıyor");
+//             _logger.LogInformation($"   - Şimdiki Periyod: {currentPeriod}");
+//             _logger.LogInformation($"   - Önceki Periyod: {previousPeriod}");
+
+//             // Şimdiki dönemin verilerini al
+//             var currentAnalysis = await AnalyzeCustomersAsync(currentPeriod, filter);
+
+//             // Önceki dönemin verilerini al
+//             var previousAnalysis = await AnalyzeCustomersAsync(previousPeriod, filter);
+
+//             if (!currentAnalysis.Success || !previousAnalysis.Success)
+//             {
+//                 return new CustomerComparisonAnalysisDto
+//                 {
+//                     Success = false,
+//                     Message = "Bir veya her iki dönemin verisi alınamadı"
+//                 };
+//             }
+
+//             // Karşılaştırma verilerini hesapla
+//             var currentAmount = currentAnalysis.TotalSalesAmount;
+//             var previousAmount = previousAnalysis.TotalSalesAmount;
+
+//             var amountDifference = currentAmount - previousAmount;
+//             var amountDifferencePercent = previousAmount > 0
+//                 ? (amountDifference / previousAmount) * 100
+//                 : 0;
+
+//             var currentOrderCount = currentAnalysis.TotalOrderCount;
+//             var previousOrderCount = previousAnalysis.TotalOrderCount;
+
+//             var orderDifference = currentOrderCount - previousOrderCount;
+//             var orderDifferencePercent = previousOrderCount > 0
+//                 ? ((double)orderDifference / previousOrderCount) * 100
+//                 : 0;
+
+//             var currentCustomerCount = currentAnalysis.TotalCustomerCount;
+//             var previousCustomerCount = previousAnalysis.TotalCustomerCount;
+
+//             var customerDifference = currentCustomerCount - previousCustomerCount;
+//             var customerDifferencePercent = previousCustomerCount > 0
+//                 ? ((double)customerDifference / previousCustomerCount) * 100
+//                 : 0;
+
+//             // Müşteri seviyesinde karşılaştırma
+//             var customerComparisons = CompareCustomerLists(
+//                 currentAnalysis.TopCustomers,
+//                 previousAnalysis.TopCustomers);
+
+//             return new CustomerComparisonAnalysisDto
+//             {
+//                 Success = true,
+//                 Message = "✅ Periyod karşılaştırması başarılı",
+//                 CurrentPeriod = currentPeriod.ToString(),
+//                 PreviousPeriod = previousPeriod.ToString(),
+
+//                 // Satış Tutarı Karşılaştırması
+//                 CurrentAmount = SanitizeDouble(currentAmount),
+//                 PreviousAmount = SanitizeDouble(previousAmount),
+//                 AmountDifference = SanitizeDouble(amountDifference),
+//                 AmountDifferencePercent = SanitizeDouble(amountDifferencePercent),
+//                 AmountTrend = GetTrend(amountDifferencePercent),
+
+//                 // Sipariş Sayısı Karşılaştırması
+//                 CurrentOrderCount = currentOrderCount,
+//                 PreviousOrderCount = previousOrderCount,
+//                 OrderDifference = orderDifference,
+//                 OrderDifferencePercent = SanitizeDouble(orderDifferencePercent),
+//                 OrderTrend = GetTrend(orderDifferencePercent),
+
+//                 // Müşteri Sayısı Karşılaştırması
+//                 CurrentCustomerCount = currentCustomerCount,
+//                 PreviousCustomerCount = previousCustomerCount,
+//                 CustomerDifference = customerDifference,
+//                 CustomerDifferencePercent = SanitizeDouble(customerDifferencePercent),
+//                 CustomerTrend = GetTrend(customerDifferencePercent),
+
+//                 // Ortalama Sipariş Tutarı
+//                 CurrentAverageOrderAmount = SanitizeDouble(currentAnalysis.AverageOrderAmount),
+//                 PreviousAverageOrderAmount = SanitizeDouble(previousAnalysis.AverageOrderAmount),
+//                 AverageOrderDifference = SanitizeDouble(
+//                     currentAnalysis.AverageOrderAmount - previousAnalysis.AverageOrderAmount),
+
+//                 // Müşteri Seviyesi Karşılaştırması
+//                 CurrentTopCustomers = currentAnalysis.TopCustomers,
+//                 PreviousTopCustomers = previousAnalysis.TopCustomers,
+//                 CustomerComparisons = customerComparisons
+//             };
+//         }
+//         catch (Exception ex)
+//         {
+//             _logger.LogError($"❌ Periyod karşılaştırması hatası: {ex.Message}");
+//             return new CustomerComparisonAnalysisDto
+//             {
+//                 Success = false,
+//                 Message = $"Hata oluştu: {ex.Message}"
+//             };
+//         }
+//     }
+
+//     /// <summary>
+//     /// İki farklı tarih aralığını karşılaştırır (Geliştirilmiş versyon)
+//     /// </summary>
+//     public async Task<CustomerComparisonAnalysisDto> CompareDateRangesAsync(
+//         DateRangeQuery currentRange,
+//         DateRangeQuery previousRange,
+//         ReportFilterModel filter = null)
+//     {
+//         int topCount = filter?.TopCount ?? 5;
+//         try
+//         {
+//             _logger.LogInformation($"📊 Tarih Aralığı Karşılaştırması Başlatıldı");
+//             _logger.LogInformation($"   - Şimdiki: {currentRange.Description} ({currentRange})");
+//             _logger.LogInformation($"   - Önceki: {previousRange.Description} ({previousRange})");
+
+//             // Şimdiki dönemin verilerini al (tarih aralığı ile)
+//             var currentOrdersJson = await GetSalesOrderByDateRangeAsync(
+//                 currentRange.StartDate,
+//                 currentRange.EndDate);
+
+//             // Önceki dönemin verilerini al (tarih aralığı ile)
+//             var previousOrdersJson = await GetSalesOrderByDateRangeAsync(
+//                 previousRange.StartDate,
+//                 previousRange.EndDate);
+
+//             if (currentOrdersJson == "[]" && previousOrdersJson == "[]")
+//             {
+//                 return new CustomerComparisonAnalysisDto
+//                 {
+//                     Success = false,
+//                     Message = "Her iki dönem için de veri bulunamadı"
+//                 };
+//             }
+
+//             // Müşteri verilerini çıkart
+//             var currentCustomers = ExtractCustomerDataFromJson(currentOrdersJson, currentRange.Description);
+//             var previousCustomers = ExtractCustomerDataFromJson(previousOrdersJson, previousRange.Description);
+
+//             if (!currentCustomers.Any() && !previousCustomers.Any())
+//             {
+//                 return new CustomerComparisonAnalysisDto
+//                 {
+//                     Success = false,
+//                     Message = "Müşteri verisi bulunamadı"
+//                 };
+//             }
+
+//             // Apply filters to current customers
+//             var filteredCurrentCustomers = currentCustomers.Values.AsEnumerable();
+//             var filteredPreviousCustomers = previousCustomers.Values.AsEnumerable();
+
+//             if (filter != null)
+//             {
+//                 if (filter.CustomerNames != null && filter.CustomerNames.Any())
+//                 {
+//                     filteredCurrentCustomers = filteredCurrentCustomers.Where(c => filter.CustomerNames.Contains(c.CustomerName));
+//                     filteredPreviousCustomers = filteredPreviousCustomers.Where(c => filter.CustomerNames.Contains(c.CustomerName));
+//                 }
+
+//                 if (!string.IsNullOrEmpty(filter.SearchTerm))
+//                 {
+//                     filteredCurrentCustomers = filteredCurrentCustomers.Where(c => c.CustomerName.Contains(filter.SearchTerm, StringComparison.OrdinalIgnoreCase));
+//                     filteredPreviousCustomers = filteredPreviousCustomers.Where(c => c.CustomerName.Contains(filter.SearchTerm, StringComparison.OrdinalIgnoreCase));
+//                 }
+
+//                 if (filter.MinAmount.HasValue)
+//                 {
+//                     filteredCurrentCustomers = filteredCurrentCustomers.Where(c => c.TotalOrderAmount >= filter.MinAmount.Value);
+//                     filteredPreviousCustomers = filteredPreviousCustomers.Where(c => c.TotalOrderAmount >= filter.MinAmount.Value);
+//                 }
+
+//                 if (filter.MaxAmount.HasValue)
+//                 {
+//                     filteredCurrentCustomers = filteredCurrentCustomers.Where(c => c.TotalOrderAmount <= filter.MaxAmount.Value);
+//                     filteredPreviousCustomers = filteredPreviousCustomers.Where(c => c.TotalOrderAmount <= filter.MaxAmount.Value);
+//                 }
+//             }
+
+//             // Top müşterileri seç
+//             var currentTopCustomers = filteredCurrentCustomers
+//                 .OrderByDescending(x => x.OrderCount)
+//                 .ThenByDescending(x => x.TotalOrderAmount)
+//                 .Take(topCount)
+//                 .Select((c, index) => new TopCustomerDto
+//                 {
+//                     Rank = index + 1,
+//                     CustomerName = c.CustomerName,
+//                     TotalOrders = c.OrderCount,
+//                     TotalOrderAmount = SanitizeDouble(c.TotalOrderAmount),
+//                     AverageOrderAmount = SanitizeDouble(c.AverageOrderAmount),
+//                     PercentageOfTotalSales = 0  // Aşağıda hesaplanacak
+//                 })
+//                 .ToList();
+
+//             var previousTopCustomers = filteredPreviousCustomers
+//                 .OrderByDescending(x => x.OrderCount)
+//                 .ThenByDescending(x => x.TotalOrderAmount)
+//                 .Take(topCount)
+//                 .Select((c, index) => new TopCustomerDto
+//                 {
+//                     Rank = index + 1,
+//                     CustomerName = c.CustomerName,
+//                     TotalOrders = c.OrderCount,
+//                     TotalOrderAmount = SanitizeDouble(c.TotalOrderAmount),
+//                     AverageOrderAmount = SanitizeDouble(c.AverageOrderAmount),
+//                     PercentageOfTotalSales = 0  // Aşağıda hesaplanacak
+//                 })
+//                 .ToList();
+
+//             // Yüzdeleri hesapla
+//             var currentTotal = currentTopCustomers.Sum(x => x.TotalOrderAmount);
+//             var previousTotal = previousTopCustomers.Sum(x => x.TotalOrderAmount);
+
+//             currentTopCustomers.ForEach(c =>
+//                 c.PercentageOfTotalSales = currentTotal > 0
+//                     ? (c.TotalOrderAmount / currentTotal) * 100
+//                     : 0);
+
+//             previousTopCustomers.ForEach(c =>
+//                 c.PercentageOfTotalSales = previousTotal > 0
+//                     ? (c.TotalOrderAmount / previousTotal) * 100
+//                     : 0);
+
+//             // Karşılaştırma yap
+//             var amountDifference = currentTotal - previousTotal;
+//             var amountDifferencePercent = previousTotal > 0
+//                 ? (amountDifference / previousTotal) * 100
+//                 : 0;
+
+//             var currentOrderCount = currentTopCustomers.Sum(x => x.TotalOrders);
+//             var previousOrderCount = previousTopCustomers.Sum(x => x.TotalOrders);
+
+//             var orderDifference = currentOrderCount - previousOrderCount;
+//             var orderDifferencePercent = previousOrderCount > 0
+//                 ? ((double)orderDifference / previousOrderCount) * 100
+//                 : 0;
+
+//             var currentCustomerCount = currentTopCustomers.Count;
+//             var previousCustomerCount = previousTopCustomers.Count;
+
+//             var customerDifference = currentCustomerCount - previousCustomerCount;
+//             var customerDifferencePercent = previousCustomerCount > 0
+//                 ? ((double)customerDifference / previousCustomerCount) * 100
+//                 : 0;
+
+//             var customerComparisons = CompareCustomerLists(currentTopCustomers, previousTopCustomers);
+
+//             _logger.LogInformation($"✅ Karşılaştırma tamamlandı");
+//             _logger.LogInformation($"   - Şimdiki: ₺{currentTotal:N2} ({currentOrderCount} sipariş, {currentCustomerCount} müşteri)");
+//             _logger.LogInformation($"   - Önceki: ₺{previousTotal:N2} ({previousOrderCount} sipariş, {previousCustomerCount} müşteri)");
+//             _logger.LogInformation($"   - Fark: {amountDifferencePercent:+0.00;-0.00;0.00}%");
+
+//             return new CustomerComparisonAnalysisDto
+//             {
+//                 Success = true,
+//                 Message = "✅ Tarih aralığı karşılaştırması başarılı",
+//                 CurrentPeriod = currentRange.Description,
+//                 PreviousPeriod = previousRange.Description,
+
+//                 CurrentAmount = SanitizeDouble(currentTotal),
+//                 PreviousAmount = SanitizeDouble(previousTotal),
+//                 AmountDifference = SanitizeDouble(amountDifference),
+//                 AmountDifferencePercent = SanitizeDouble(amountDifferencePercent),
+//                 AmountTrend = GetTrend(amountDifferencePercent),
+
+//                 CurrentOrderCount = currentOrderCount,
+//                 PreviousOrderCount = previousOrderCount,
+//                 OrderDifference = orderDifference,
+//                 OrderDifferencePercent = SanitizeDouble(orderDifferencePercent),
+//                 OrderTrend = GetTrend(orderDifferencePercent),
+
+//                 CurrentCustomerCount = currentCustomerCount,
+//                 PreviousCustomerCount = previousCustomerCount,
+//                 CustomerDifference = customerDifference,
+//                 CustomerDifferencePercent = SanitizeDouble(customerDifferencePercent),
+//                 CustomerTrend = GetTrend(customerDifferencePercent),
+
+//                 CurrentAverageOrderAmount = currentOrderCount > 0
+//                     ? currentTotal / currentOrderCount
+//                     : 0,
+//                 PreviousAverageOrderAmount = previousOrderCount > 0
+//                     ? previousTotal / previousOrderCount
+//                     : 0,
+//                 AverageOrderDifference = (currentOrderCount > 0 ? currentTotal / currentOrderCount : 0) -
+//                                          (previousOrderCount > 0 ? previousTotal / previousOrderCount : 0),
+
+//                 CurrentTopCustomers = currentTopCustomers,
+//                 PreviousTopCustomers = previousTopCustomers,
+//                 CustomerComparisons = customerComparisons
+//             };
+//         }
+//         catch (Exception ex)
+//         {
+//             _logger.LogError($"❌ Tarih aralığı karşılaştırması hatası: {ex.Message}");
+//             return new CustomerComparisonAnalysisDto
+//             {
+//                 Success = false,
+//                 Message = $"Hata oluştu: {ex.Message}"
+//             };
+//         }
+//     }
+
+//     /// <summary>
+//     /// JSON'dan müşteri verilerini çıkart
+//     /// </summary>
+//     private Dictionary<string, CustomerSalesData> ExtractCustomerDataFromJson(
+//         string rawOrdersJson,
+//         string periodDescription)
+//     {
+//         var customerData = new Dictionary<string, CustomerSalesData>();
+
+//         if (rawOrdersJson == "[]")
+//         {
+//             _logger.LogWarning($"⚠️ {periodDescription}: Veri bulunamadı");
+//             return customerData;
+//         }
+
+//         try
+//         {
+//             using var doc = JsonDocument.Parse(rawOrdersJson);
+
+//             if (!doc.RootElement.TryGetProperty("d", out var dataElement))
+//             {
+//                 _logger.LogError($"❌ {periodDescription}: 'd' property bulunamadı");
+//                 return customerData;
+//             }
+
+//             JsonElement resultsElement;
+//             if (dataElement.ValueKind == JsonValueKind.Object &&
+//                 dataElement.TryGetProperty("results", out var res))
+//             {
+//                 resultsElement = res;
+//             }
+//             else if (dataElement.ValueKind == JsonValueKind.Array)
+//             {
+//                 resultsElement = dataElement;
+//             }
+//             else
+//             {
+//                 _logger.LogError($"❌ {periodDescription}: Beklenmeyen JSON yapısı");
+//                 return customerData;
+//             }
+
+//             var orderCount = 0;
+//             foreach (var salesOrder in resultsElement.EnumerateArray())
+//             {
+//                 orderCount++;
+
+//                 var customerName = salesOrder.TryGetProperty("DeliverToName", out var name)
+//                     ? name.GetString() ?? "Bilinmeyen Müşteri"
+//                     : "Bilinmeyen Müşteri";
+
+//                 double orderAmount = 0;
+//                 if (salesOrder.TryGetProperty("AmountDC", out var amount))
+//                 {
+//                     orderAmount = SanitizeDouble(amount.GetDouble());
+//                 }
+//                 else if (salesOrder.TryGetProperty("AmountFC", out var topAmount))
+//                 {
+//                     orderAmount = SanitizeDouble(topAmount.GetDouble());
+//                 }
+
+//                 if (string.IsNullOrWhiteSpace(customerName) || customerName == "Bilinmeyen Müşteri")
+//                     continue;
+
+//                 if (customerData.ContainsKey(customerName))
+//                 {
+//                     customerData[customerName].TotalOrderAmount += orderAmount;
+//                     customerData[customerName].OrderCount++;
+//                     customerData[customerName].AverageOrderAmount =
+//                         customerData[customerName].TotalOrderAmount / customerData[customerName].OrderCount;
+//                 }
+//                 else
+//                 {
+//                     customerData[customerName] = new CustomerSalesData
+//                     {
+//                         CustomerName = customerName,
+//                         TotalOrderAmount = orderAmount,
+//                         OrderCount = 1,
+//                         AverageOrderAmount = orderAmount
+//                     };
+//                 }
+//             }
+
+//             _logger.LogInformation($"✅ {periodDescription}: {orderCount} sipariş, {customerData.Count} müşteri");
+//         }
+//         catch (Exception ex)
+//         {
+//             _logger.LogError($"❌ {periodDescription} JSON çıkarma hatası: {ex.Message}");
+//         }
+
+//         return customerData;
+//     }
+//     private string GetTrend(double percentageChange)
+//     {
+//         if (percentageChange > 5)
+//             return "📈 Güçlü Artış";
+//         else if (percentageChange > 0)
+//             return "📊 Hafif Artış";
+//         else if (percentageChange < -5)
+//             return "📉 Güçlü Azalış";
+//         else if (percentageChange < 0)
+//             return "📊 Hafif Azalış";
+//         else
+//             return "➡️ Sabit";
+//     }
+//     private string GetCustomerStatus(int orderChange, double amountChange)
+//     {
+//         if (orderChange > 0 && amountChange > 0)
+//             return "📈 Büyüyor";
+//         else if (orderChange > 0 || amountChange > 0)
+//             return "📊 Gelişiyor";
+//         else if (orderChange < 0 || amountChange < 0)
+//             return "📉 Düşüyor";
+//         else
+//             return "➡️ Sabit";
+//     }
+
+//     private double SanitizeDouble(double value)
+//     {
+//         if (double.IsNaN(value) || double.IsInfinity(value))
+//             return 0;
+//         return value;
+//     }
+//     public async Task<string> GetAllSalesOrderAsync(TimePeriod period = TimePeriod.OneYear)
+//     {
+
+//         var exactService = _serviceProvider.GetRequiredService<ExactService>();
+//         var token = await exactService.GetValidToken();
+
+//         if (token == null)
+//         {
+//             _logger.LogError("❌ Token alınamadı");
+//             return "[]";
+//         }
+
+//         using var client = new HttpClient();
+//         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+//         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+//         try
+//         {
+//             var allSalesOrders = new List<JsonElement>();
+//             int pageSize = 60;
+//             int skip = 0;
+
+//             // Belirtilen periyoda göre başlangıç tarihini hesapla
+//             int daysBack = (int)period;
+//             var startDate = DateTime.UtcNow.AddDays(-daysBack).ToString("yyyy-MM-dd");
+
+//             _logger.LogInformation($"📅 Tarih Aralığı: {daysBack} gün öncesi ({startDate}) - Bugün");
+
+//             bool hasMoreData = true;
+//             int pageNumber = 1;
+
+//             while (hasMoreData)
+//             {
+//                 var filter = $"$filter=Created ge datetime'{startDate}'";
+//                 var url = $"{_baseUrl}/api/v1/{_divisionCode}/salesorder/SalesOrders" +
+//                          $"?{filter}" +
+//                          $"&$top={pageSize}" +
+//                          $"&$skip={skip}";
+
+//                 _logger.LogInformation($"📄 Sayfa {pageNumber} çekiliyor... (Skip: {skip}, Toplam: {allSalesOrders.Count})");
+
+//                 var response = await client.GetAsync(url);
+
+//                 if (!response.IsSuccessStatusCode)
+//                 {
+//                     _logger.LogError($"❌ API Hatası {response.StatusCode}");
+//                     break;
+//                 }
+
+//                 var content = await response.Content.ReadAsStringAsync();
+
+//                 try
+//                 {
+//                     var jsonDocument = JsonDocument.Parse(content);
+//                     var root = jsonDocument.RootElement;
+//                     JsonElement dataToProcess = default;
+//                     bool found = false;
+
+//                     // Case 1: "d" array olarak gelmiş
+//                     if (root.TryGetProperty("d", out var dProperty))
+//                     {
+//                         if (dProperty.ValueKind == JsonValueKind.Array)
+//                         {
+//                             dataToProcess = dProperty;
+//                             found = true;
+//                         }
+//                         // Case 2: "d" object içinde "results"
+//                         else if (dProperty.ValueKind == JsonValueKind.Object &&
+//                                  dProperty.TryGetProperty("results", out var results))
+//                         {
+//                             dataToProcess = results;
+//                             found = true;
+//                         }
+//                     }
+//                     // Case 3: "value" property
+//                     else if (root.TryGetProperty("value", out var valueElement))
+//                     {
+//                         dataToProcess = valueElement;
+//                         found = true;
+//                     }
+
+//                     if (!found)
+//                     {
+//                         _logger.LogWarning("⚠️ Beklenmeyen JSON yapısı");
+//                         break;
+//                     }
+
+//                     if (dataToProcess.ValueKind == JsonValueKind.Array)
+//                     {
+//                         var items = dataToProcess.EnumerateArray().ToList();
+
+//                         if (items.Count == 0)
+//                         {
+//                             hasMoreData = false;
+//                             _logger.LogInformation("✓ Tüm veriler alındı");
+//                         }
+//                         else
+//                         {
+//                             allSalesOrders.AddRange(items);
+//                             skip += pageSize;
+//                             pageNumber++;
+//                         }
+//                     }
+//                     else
+//                     {
+//                         hasMoreData = false;
+//                     }
+//                 }
+//                 catch (JsonException ex)
+//                 {
+//                     _logger.LogError($"❌ JSON Parse Hatası: {ex.Message}");
+//                     break;
+//                 }
+
+//                 await Task.Delay(500);
+//             }
+
+//             _logger.LogInformation($"✅ Toplam {allSalesOrders.Count} satış siparişi başarıyla alındı");
+
+//             var finalResult = new { d = allSalesOrders };
+//             return JsonSerializer.Serialize(finalResult, new JsonSerializerOptions { WriteIndented = true });
+//         }
+//         catch (Exception ex)
+//         {
+//             _logger.LogError($"❌ Hata oluştu: {ex.Message}");
+//             return "[]";
+//         }
+//     }
+
+    
+
+//     public async Task<string> GetSalesOrderByDateRangeAsync(
+//     DateTime startDate,
+//     DateTime endDate)
+//     {
+//         var exactService = _serviceProvider.GetRequiredService<ExactService>();
+//         var token = await exactService.GetValidToken();
+
+//         if (token == null)
+//         {
+//             _logger.LogError("❌ Token alınamadı");
+//             return "[]";
+//         }
+
+//         using var client = new HttpClient();
+//         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+//         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+//         try
+//         {
+//             var allSalesOrders = new List<JsonElement>();
+//             int pageSize = 60;
+//             int skip = 0;
+
+//             // Tarih aralığını Exact Online format'ına çevir
+//             var startDateStr = startDate.ToString("yyyy-MM-dd");
+//             var endDateStr = endDate.ToString("yyyy-MM-dd");
+
+//             _logger.LogInformation($"📅 Tarih Aralığı: {startDateStr} - {endDateStr}");
+
+//             bool hasMoreData = true;
+//             int pageNumber = 1;
+
+//             while (hasMoreData)
+//             {
+//                 // Filter: Belirtilen tarih aralığında olan siparişler
+//                 // Başlangıç tarihi >= startDate AND Başlangıç tarihi <= endDate
+//                 var filter = $"$filter=Created ge datetime'{startDateStr}' and Created le datetime'{endDateStr}'";
+//                 var url = $"{_baseUrl}/api/v1/{_divisionCode}/salesorder/SalesOrders" +
+//                          $"?{filter}" +
+//                          $"&$top={pageSize}" +
+//                          $"&$skip={skip}";
+
+//                 _logger.LogInformation($"📄 Sayfa {pageNumber} çekiliyor... (Skip: {skip}, Toplam: {allSalesOrders.Count})");
+
+//                 var response = await client.GetAsync(url);
+
+//                 if (!response.IsSuccessStatusCode)
+//                 {
+//                     _logger.LogError($"❌ API Hatası {response.StatusCode}");
+//                     break;
+//                 }
+
+//                 var content = await response.Content.ReadAsStringAsync();
+
+//                 try
+//                 {
+//                     var jsonDocument = JsonDocument.Parse(content);
+//                     var root = jsonDocument.RootElement;
+//                     JsonElement dataToProcess = default;
+//                     bool found = false;
+
+//                     // Case 1: "d" array olarak gelmiş
+//                     if (root.TryGetProperty("d", out var dProperty))
+//                     {
+//                         if (dProperty.ValueKind == JsonValueKind.Array)
+//                         {
+//                             dataToProcess = dProperty;
+//                             found = true;
+//                         }
+//                         // Case 2: "d" object içinde "results"
+//                         else if (dProperty.ValueKind == JsonValueKind.Object &&
+//                                  dProperty.TryGetProperty("results", out var results))
+//                         {
+//                             dataToProcess = results;
+//                             found = true;
+//                         }
+//                     }
+//                     // Case 3: "value" property
+//                     else if (root.TryGetProperty("value", out var valueElement))
+//                     {
+//                         dataToProcess = valueElement;
+//                         found = true;
+//                     }
+
+//                     if (!found)
+//                     {
+//                         _logger.LogWarning("⚠️ Beklenmeyen JSON yapısı");
+//                         break;
+//                     }
+
+//                     if (dataToProcess.ValueKind == JsonValueKind.Array)
+//                     {
+//                         var items = dataToProcess.EnumerateArray().ToList();
+
+//                         if (items.Count == 0)
+//                         {
+//                             hasMoreData = false;
+//                             _logger.LogInformation("✓ Tüm veriler alındı");
+//                         }
+//                         else
+//                         {
+//                             allSalesOrders.AddRange(items);
+//                             skip += pageSize;
+//                             pageNumber++;
+//                         }
+//                     }
+//                     else
+//                     {
+//                         hasMoreData = false;
+//                     }
+//                 }
+//                 catch (JsonException ex)
+//                 {
+//                     _logger.LogError($"❌ JSON Parse Hatası: {ex.Message}");
+//                     break;
+//                 }
+
+//                 await Task.Delay(500);
+//             }
+
+//             _logger.LogInformation($"✅ Toplam {allSalesOrders.Count} satış siparişi başarıyla alındı");
+
+//             var finalResult = new { d = allSalesOrders };
+//             return JsonSerializer.Serialize(finalResult, new JsonSerializerOptions { WriteIndented = true });
+//         }
+//         catch (Exception ex)
+//         {
+//             _logger.LogError($"❌ Hata oluştu: {ex.Message}");
+//             return "[]";
+//         }
+//     }
+
+//     //son 3 ayda sipariş vermeyen müşteriler
+//     public async Task<List<InactiveCustomerDto>> GetInactiveCustomersAsync(
+//         TimePeriod period = TimePeriod.ThreeMonths,
+//         ReportFilterModel filter = null)
+//     {
+//         try
+//         {
+//             _logger.LogInformation($"👥 İnaktif müşteriler çıkartılıyor - Periyod: {period}");
+
+//             // 1. Belirtilen periyotta sipariş veren müşterileri al
+//             var rawOrdersJson = await GetAllSalesOrderAsync(period);
+            
+//             if (rawOrdersJson == "[]")
+//             {
+//                 _logger.LogWarning("⚠️ Sipariş verisi alınamadı");
+//                 return new List<InactiveCustomerDto>();
+//             }
+
+//             // Sipariş veren müşterilerin isimlerini topla
+//             var customersWithOrders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            
+//             using (var doc = JsonDocument.Parse(rawOrdersJson))
+//             {
+//                 if (!doc.RootElement.TryGetProperty("d", out var dataElement))
+//                 {
+//                     _logger.LogError("❌ Beklenmeyen JSON yapısı: 'd' property bulunamadı");
+//                     return new List<InactiveCustomerDto>();
+//                 }
+
+//                 JsonElement resultsElement;
+//                 if (dataElement.ValueKind == JsonValueKind.Object && 
+//                     dataElement.TryGetProperty("results", out var res))
+//                 {
+//                     resultsElement = res;
+//                 }
+//                 else if (dataElement.ValueKind == JsonValueKind.Array)
+//                 {
+//                     resultsElement = dataElement;
+//                 }
+//                 else
+//                 {
+//                     _logger.LogError("❌ Beklenmeyen JSON yapısı");
+//                     return new List<InactiveCustomerDto>();
+//                 }
+
+//                 foreach (var salesOrder in resultsElement.EnumerateArray())
+//                 {
+//                     var customerName = salesOrder.TryGetProperty("DeliverToName", out var name)
+//                         ? name.GetString() ?? ""
+//                         : "";
+                    
+//                     if (!string.IsNullOrWhiteSpace(customerName))
+//                     {
+//                         customersWithOrders.Add(customerName);
+//                     }
+//                 }
+//             }
+
+//             _logger.LogInformation($"✅ {customersWithOrders.Count} müşteri son {period} içinde sipariş vermiş");
+
+//             // 2. Tüm aktif müşterileri al (Status = 'C')
+//             var allActiveCustomers = await GetAllActiveCustomersAsync();
+            
+//             if (allActiveCustomers == null || !allActiveCustomers.Any())
+//             {
+//                 _logger.LogWarning("⚠️ Aktif müşteri verisi alınamadı");
+//                 return new List<InactiveCustomerDto>();
+//             }
+
+//             _logger.LogInformation($"✅ Toplam {allActiveCustomers.Count} aktif müşteri bulundu");
+
+//             // 3. Sipariş vermemiş müşterileri bul
+//             var inactiveCustomers = allActiveCustomers
+//                 .Where(c => !customersWithOrders.Contains(c.Name))
+//                 .Select((c, index) => new InactiveCustomerDto
+//                 {
+//                     Rank = index + 1,
+//                     CustomerName = c.Name,
+//                     AccountCode = c.Code,
+//                     Email = c.Email,
+//                     Phone = c.Phone,
+//                     City = c.City,
+//                     Country = c.Country,
+//                     LastActivityDate = c.Modified
+//                 })
+//                 .ToList();
+
+//             // Apply filters if provided
+//             if (filter != null)
+//             {
+//                 var filteredCustomers = inactiveCustomers.AsEnumerable();
+
+//                 if (filter.CustomerNames != null && filter.CustomerNames.Any())
+//                 {
+//                     filteredCustomers = filteredCustomers.Where(c => 
+//                         filter.CustomerNames.Contains(c.CustomerName, StringComparer.OrdinalIgnoreCase));
+//                 }
+
+//                 if (!string.IsNullOrEmpty(filter.SearchTerm))
+//                 {
+//                     filteredCustomers = filteredCustomers.Where(c => 
+//                         c.CustomerName.Contains(filter.SearchTerm, StringComparison.OrdinalIgnoreCase) ||
+//                         (c.Email != null && c.Email.Contains(filter.SearchTerm, StringComparison.OrdinalIgnoreCase)) ||
+//                         (c.AccountCode != null && c.AccountCode.Contains(filter.SearchTerm, StringComparison.OrdinalIgnoreCase)));
+//                 }
+
+//                 inactiveCustomers = filteredCustomers.ToList();
+//             }
+
+//             _logger.LogInformation($"✅ {inactiveCustomers.Count} inaktif müşteri bulundu");
+            
+//             return inactiveCustomers;
+//         }
+//         catch (Exception ex)
+//         {
+//             _logger.LogError($"❌ İnaktif müşteri analiz hatası: {ex.Message}");
+//             return new List<InactiveCustomerDto>();
+//         }
+//     }
+
+//     // Tüm aktif müşterileri getir (Status = 'C')
+//     private async Task<List<ActiveCustomerInfo>> GetAllActiveCustomersAsync()
+//     {
+//         try
+//         {
+//             var exactService = _serviceProvider.GetRequiredService<ExactService>();
+//             var token = await exactService.GetValidToken();
+
+//             if (token == null)
+//             {
+//                 _logger.LogError("❌ Geçerli bir token alınamadı");
+//                 return new List<ActiveCustomerInfo>();
+//             }
+
+//             using var client = new HttpClient();
+//             client.Timeout = TimeSpan.FromMinutes(10);
+//             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+//             client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+//             int top = 60;
+//             int skip = 0;
+//             var allCustomers = new List<ActiveCustomerInfo>();
+
+//             while (true)
+//             {
+//                 var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Status eq 'C'&$top={top}&$skip={skip}";
+                
+//                 var response = await client.GetAsync(url);
+                
+//                 if (!response.IsSuccessStatusCode)
+//                 {
+//                     _logger.LogError($"❌ API hatası: {response.StatusCode}");
+//                     break;
+//                 }
+
+//                 var content = await response.Content.ReadAsStringAsync();
+//                 using var doc = JsonDocument.Parse(content);
+
+//                 if (!doc.RootElement.TryGetProperty("d", out var dataElement))
+//                 {
+//                     _logger.LogError("❌ 'd' property bulunamadı");
+//                     break;
+//                 }
+
+//                 JsonElement resultsElement;
+//                 if (dataElement.ValueKind == JsonValueKind.Object && 
+//                     dataElement.TryGetProperty("results", out var res))
+//                 {
+//                     resultsElement = res;
+//                 }
+//                 else if (dataElement.ValueKind == JsonValueKind.Array)
+//                 {
+//                     resultsElement = dataElement;
+//                 }
+//                 else
+//                 {
+//                     break;
+//                 }
+
+//                 int countInPage = 0;
+//                 foreach (var account in resultsElement.EnumerateArray())
+//                 {
+//                     var customer = new ActiveCustomerInfo
+//                     {
+//                         Name = account.TryGetProperty("Name", out var name) 
+//                             ? name.GetString() ?? "" 
+//                             : "",
+//                         Code = account.TryGetProperty("Code", out var code) 
+//                             ? code.GetString() ?? "" 
+//                             : "",
+//                         Email = account.TryGetProperty("Email", out var email) 
+//                             ? email.GetString() 
+//                             : null,
+//                         Phone = account.TryGetProperty("Phone", out var phone) 
+//                             ? phone.GetString() 
+//                             : null,
+//                         City = account.TryGetProperty("City", out var city) 
+//                             ? city.GetString() 
+//                             : null,
+//                         Country = account.TryGetProperty("Country", out var country) 
+//                             ? country.GetString() 
+//                             : null,
+//                         Modified = account.TryGetProperty("Modified", out var modified) 
+//                             ? (modified.TryGetDateTime(out var modDate) ? modDate : (DateTime?)null)
+//                             : null
+//                     };
+
+//                     if (!string.IsNullOrWhiteSpace(customer.Name))
+//                     {
+//                         allCustomers.Add(customer);
+//                         countInPage++;
+//                     }
+//                 }
+
+//                 _logger.LogInformation($"📄 Sayfa {skip / top + 1}: {countInPage} müşteri alındı. Toplam: {allCustomers.Count}");
+
+//                 if (countInPage < top) break;
+//                 skip += top;
+//                 await Task.Delay(200); // Rate limiting
+//             }
+
+//             return allCustomers;
+//         }
+//         catch (Exception ex)
+//         {
+//             _logger.LogError($"❌ Aktif müşteri getirme hatası: {ex.Message}");
+//             return new List<ActiveCustomerInfo>();
+//         }
+//     }
+
+// }
+
+// public class CustomerSalesData
+// {
+//     public string CustomerName { get; set; }
+//     public double TotalOrderAmount { get; set; }
+//     public int OrderCount { get; set; }
+//     public double AverageOrderAmount { get; set; }
+// }
+
+// public class TopCustomerDto
+// {
+//     public int Rank { get; set; }
+//     public string CustomerName { get; set; }
+//     public int TotalOrders { get; set; }
+//     public double TotalOrderAmount { get; set; }
+//     public double AverageOrderAmount { get; set; }
+//     public double PercentageOfTotalSales { get; set; }
+// }
+
+// public class CustomerAnalysisDto
+// {
+//     public bool Success { get; set; }
+//     public string Message { get; set; }
+//     public string Period { get; set; }
+//     public int TopCustomerCount { get; set; }
+//     public int TotalCustomerCount { get; set; }
+//     public int TotalOrderCount { get; set; }
+//     public double TotalSalesAmount { get; set; }
+//     public double AverageOrderAmount { get; set; }
+//     public double AverageCustomerValue { get; set; }
+//     public List<TopCustomerDto> TopCustomers { get; set; }
+// }
+// public class CustomerComparisonDetailDto
+// {
+//     public string CustomerName { get; set; }
+
+//     // Şimdiki Dönem
+//     public int? CurrentRank { get; set; }
+//     public int CurrentOrders { get; set; }
+//     public double CurrentAmount { get; set; }
+//     public double CurrentPercentage { get; set; }
+
+//     // Önceki Dönem
+//     public int? PreviousRank { get; set; }
+//     public int PreviousOrders { get; set; }
+//     public double PreviousAmount { get; set; }
+//     public double PreviousPercentage { get; set; }
+
+//     // Farklılıklar
+//     public int? RankChange { get; set; } // Negatif = düştü, pozitif = yükseldi
+//     public int OrderChange { get; set; }
+//     public double AmountChange { get; set; }
+//     public double AmountChangePercent { get; set; }
+
+//     // Durum
+//     public string Status { get; set; } // 📈 Büyüyor, 📉 Düşüyor, 🆕 Yeni, ❌ Çıktı
+// }
+// public class CustomerComparisonAnalysisDto
+// {
+//     public bool Success { get; set; }
+//     public string Message { get; set; }
+
+//     // Periyod Bilgileri
+//     public string CurrentPeriod { get; set; }
+//     public string PreviousPeriod { get; set; }
+
+//     // Satış Tutarı Karşılaştırması
+//     public double CurrentAmount { get; set; }
+//     public double PreviousAmount { get; set; }
+//     public double AmountDifference { get; set; }
+//     public double AmountDifferencePercent { get; set; }
+//     public string AmountTrend { get; set; }
+
+//     // Sipariş Sayısı Karşılaştırması
+//     public int CurrentOrderCount { get; set; }
+//     public int PreviousOrderCount { get; set; }
+//     public int OrderDifference { get; set; }
+//     public double OrderDifferencePercent { get; set; }
+//     public string OrderTrend { get; set; }
+
+//     // Müşteri Sayısı Karşılaştırması
+//     public int CurrentCustomerCount { get; set; }
+//     public int PreviousCustomerCount { get; set; }
+//     public int CustomerDifference { get; set; }
+//     public double CustomerDifferencePercent { get; set; }
+//     public string CustomerTrend { get; set; }
+
+//     // Ortalama Değerler
+//     public double CurrentAverageOrderAmount { get; set; }
+//     public double PreviousAverageOrderAmount { get; set; }
+//     public double AverageOrderDifference { get; set; }
+
+//     // Müşteri Listeleri
+//     public List<TopCustomerDto> CurrentTopCustomers { get; set; }
+//     public List<TopCustomerDto> PreviousTopCustomers { get; set; }
+
+//     // Müşteri Seviyesi Karşılaştırması
+//     public List<CustomerComparisonDetailDto> CustomerComparisons { get; set; }
+// }
+
+
+// /// <summary>
+// /// Belirli bir tarih aralığında veri çekmeyi sağlayan DTO
+// /// </summary>
+// public class DateRangeQuery
+// {
+//     /// <summary>
+//     /// Başlangıç tarihi (inclusive)
+//     /// </summary>
+//     public DateTime StartDate { get; set; }
+
+//     /// <summary>
+//     /// Bitiş tarihi (inclusive)
+//     /// </summary>
+//     public DateTime EndDate { get; set; }
+
+//     /// <summary>
+//     /// Kaç gün olduğunu gösterir (bilgi amaçlı)
+//     /// </summary>
+//     public int DayCount => (EndDate - StartDate).Days + 1;
+
+//     /// <summary>
+//     /// Tarih aralığının açıklaması (raporlarda kullanmak için)
+//     /// </summary>
+//     public string Description { get; set; }
+
+//     /// <summary>
+//     /// Constructor
+//     /// </summary>
+//     public DateRangeQuery(DateTime startDate, DateTime endDate, string description = "")
+//     {
+//         StartDate = startDate;
+//         EndDate = endDate;
+//         Description = description;
+//     }
+
+//     public override string ToString()
+//     {
+//         return $"{StartDate:yyyy-MM-dd} to {EndDate:yyyy-MM-dd} ({DayCount} days)";
+//     }
+// }
+
+// /// <summary>
+// /// Ortak tarih aralığı sorguları
+// /// </summary>
+// public static class DateRangeFactory
+// {
+//     /// <summary>
+//     /// Bugün
+//     /// </summary>
+//     public static DateRangeQuery Today()
+//     {
+//         var now = DateTime.UtcNow.Date;
+//         return new DateRangeQuery(now, now, "Bugün");
+//     }
+
+//     /// <summary>
+//     /// Dün
+//     /// </summary>
+//     public static DateRangeQuery Yesterday()
+//     {
+//         var yesterday = DateTime.UtcNow.Date.AddDays(-1);
+//         return new DateRangeQuery(yesterday, yesterday, "Dün");
+//     }
+
+//     /// <summary>
+//     /// Son N gün (bugün dahil)
+//     /// </summary>
+//     public static DateRangeQuery LastDays(int dayCount)
+//     {
+//         var endDate = DateTime.UtcNow.Date;
+//         var startDate = endDate.AddDays(-(dayCount - 1));
+//         return new DateRangeQuery(startDate, endDate, $"Son {dayCount} gün");
+//     }
+
+//     /// <summary>
+//     /// Önceki N gün
+//     /// </summary>
+//     public static DateRangeQuery PreviousDays(int dayCount)
+//     {
+//         var endDate = DateTime.UtcNow.Date.AddDays(-1);
+//         var startDate = endDate.AddDays(-(dayCount - 1));
+//         return new DateRangeQuery(startDate, endDate, $"Önceki {dayCount} gün");
+//     }
+
+//     /// <summary>
+//     /// Bu hafta (Pazartesi-Pazar)
+//     /// </summary>
+//     public static DateRangeQuery ThisWeek()
+//     {
+//         var today = DateTime.UtcNow.Date;
+//         // Pazartesi: 0 = Pazar, 1 = Pazartesi
+//         var dayOfWeek = (int)today.DayOfWeek;
+//         var daysToMonday = dayOfWeek == 0 ? 6 : dayOfWeek - 1;
+//         var startDate = today.AddDays(-daysToMonday);
+//         var endDate = startDate.AddDays(6);
+//         return new DateRangeQuery(startDate, endDate, "Bu hafta");
+//     }
+
+//     /// <summary>
+//     /// Geçen hafta
+//     /// </summary>
+//     public static DateRangeQuery LastWeek()
+//     {
+//         var lastWeek = LastDays(7);
+//         var endDate = lastWeek.EndDate.AddDays(-7);
+//         var startDate = endDate.AddDays(-6);
+//         return new DateRangeQuery(startDate, endDate, "Geçen hafta");
+//     }
+
+//     /// <summary>
+//     /// Bu ay
+//     /// </summary>
+//     public static DateRangeQuery ThisMonth()
+//     {
+//         var today = DateTime.UtcNow.Date;
+//         var startDate = new DateTime(today.Year, today.Month, 1);
+//         var endDate = startDate.AddMonths(1).AddDays(-1);
+//         return new DateRangeQuery(startDate, endDate, "Bu ay");
+//     }
+
+//     /// <summary>
+//     /// Geçen ay
+//     /// </summary>
+//     public static DateRangeQuery LastMonth()
+//     {
+//         var today = DateTime.UtcNow.Date;
+//         var startDate = new DateTime(today.Year, today.Month, 1).AddMonths(-1);
+//         var endDate = startDate.AddMonths(1).AddDays(-1);
+//         return new DateRangeQuery(startDate, endDate, "Geçen ay");
+//     }
+
+//     /// <summary>
+//     /// Son 30 gün
+//     /// </summary>
+//     public static DateRangeQuery Last30Days()
+//     {
+//         return LastDays(30);
+//     }
+
+//     /// <summary>
+//     /// Önceki 30 gün
+//     /// </summary>
+//     public static DateRangeQuery Previous30Days()
+//     {
+//         return PreviousDays(30);
+//     }
+
+//     /// <summary>
+//     /// Bu yıl
+//     /// </summary>
+//     public static DateRangeQuery ThisYear()
+//     {
+//         var today = DateTime.UtcNow.Date;
+//         var startDate = new DateTime(today.Year, 1, 1);
+//         var endDate = new DateTime(today.Year, 12, 31);
+//         return new DateRangeQuery(startDate, endDate, "Bu yıl");
+//     }
+
+//     /// <summary>
+//     /// Geçen yıl
+//     /// </summary>
+//     public static DateRangeQuery LastYear()
+//     {
+//         var today = DateTime.UtcNow.Date;
+//         var startDate = new DateTime(today.Year - 1, 1, 1);
+//         var endDate = new DateTime(today.Year - 1, 12, 31);
+//         return new DateRangeQuery(startDate, endDate, "Geçen yıl");
+//     }
+
+//     /// <summary>
+//     /// Son N aya göre (bugün dahil)
+//     /// </summary>
+//     public static DateRangeQuery LastMonths(int monthCount)
+//     {
+//         var endDate = DateTime.UtcNow.Date;
+//         var startDate = endDate.AddMonths(-monthCount).AddDays(1);
+//         return new DateRangeQuery(startDate, endDate, $"Son {monthCount} ay");
+//     }
+
+//     /// <summary>
+//     /// Önceki N aya göre
+//     /// </summary>
+//     public static DateRangeQuery PreviousMonths(int monthCount)
+//     {
+//         var today = DateTime.UtcNow.Date;
+//         var endDate = new DateTime(today.Year, today.Month, 1).AddDays(-1);
+//         var startDate = endDate.AddMonths(-monthCount).AddDays(1);
+//         return new DateRangeQuery(startDate, endDate, $"Önceki {monthCount} ay");
+//     }
+
+//     /// <summary>
+//     /// Dün ile Bugün karşılaştırması
+//     /// </summary>
+//     public static (DateRangeQuery current, DateRangeQuery previous) YesterdayVsToday()
+//     {
+//         return (Today(), Yesterday());
+//     }
+
+//     /// <summary>
+//     /// Bu hafta ile Geçen hafta karşılaştırması
+//     /// </summary>
+//     public static (DateRangeQuery current, DateRangeQuery previous) ThisWeekVsLastWeek()
+//     {
+//         return (ThisWeek(), LastWeek());
+//     }
+
+//     /// <summary>
+//     /// Bu ay ile Geçen ay karşılaştırması
+//     /// </summary>
+//     public static (DateRangeQuery current, DateRangeQuery previous) ThisMonthVsLastMonth()
+//     {
+//         return (ThisMonth(), LastMonth());
+//     }
+
+//     /// <summary>
+//     /// Bu yıl ile Geçen yıl karşılaştırması
+//     /// </summary>
+//     public static (DateRangeQuery current, DateRangeQuery previous) ThisYearVsLastYear()
+//     {
+//         return (ThisYear(), LastYear());
+//     }
+
+//     /// <summary>
+//     /// Son 30 gün ile Önceki 30 gün karşılaştırması
+//     /// </summary>
+//     public static (DateRangeQuery current, DateRangeQuery previous) Last30DaysVsPrevious30Days()
+//     {
+//         return (Last30Days(), Previous30Days());
+//     }
+
+//     /// <summary>
+//     /// Son 3 ay ile Önceki 3 ay karşılaştırması
+//     /// </summary>
+//     public static (DateRangeQuery current, DateRangeQuery previous) Last3MonthsVsPrevious3Months()
+//     {
+//         return (LastMonths(3), PreviousMonths(3));
+//     }
+// }
+
+// // ============================================
+// // KULLANIM ÖRNEKLERİ
+// // ============================================
+
+// /*
+
+// // Örnek 1: Bugün vs Dün
+// var ranges = DateRangeFactory.YesterdayVsToday();
+// Console.WriteLine($"Şimdiki: {ranges.current}");
+// Console.WriteLine($"Önceki: {ranges.previous}");
+
+// // Örnek 2: Bu ay vs Geçen ay
+// var ranges2 = DateRangeFactory.ThisMonthVsLastMonth();
+// Console.WriteLine($"Şimdiki: {ranges2.current}");
+// Console.WriteLine($"Önceki: {ranges2.previous}");
+
+// // Örnek 3: Özel tarih aralığı
+// var custom = new DateRangeQuery(
+//     new DateTime(2024, 01, 01),
+//     new DateTime(2024, 01, 31),
+//     "Ocak 2024"
+// );
+// Console.WriteLine($"Özel: {custom}");
+
+// // Örnek 4: Son 7 gün
+// var last7 = DateRangeFactory.LastDays(7);
+// Console.WriteLine($"Son 7 Gün: {last7}");
+
+// // Örnek 5: Önceki 7 gün
+// var prev7 = DateRangeFactory.PreviousDays(7);
+// Console.WriteLine($"Önceki 7 Gün: {prev7}");
+
+// */
+
+// // DTOs for inactive customers
+// public class InactiveCustomerDto
+// {
+//     public int Rank { get; set; }
+//     public string CustomerName { get; set; }
+//     private string _accountCode;
+//     public string AccountCode 
+//     { 
+//         get => _accountCode;
+//         set => _accountCode = value?.Trim();
+//     }
+//     public string? Email { get; set; }
+//     public string? Phone { get; set; }
+//     public string? City { get; set; }
+//     public string? Country { get; set; }
+//     public DateTime? LastActivityDate { get; set; }
+// }
+
+// // Internal helper class for active customer info
+// internal class ActiveCustomerInfo
+// {
+//     public string Name { get; set; }
+//     private string _code;
+//     public string Code 
+//     { 
+//         get => _code;
+//         set => _code = value?.Trim();
+//     }
+//     public string? Email { get; set; }
+//     public string? Phone { get; set; }
+//     public string? City { get; set; }
+//     public string? Country { get; set; }
+//     public DateTime? Modified { get; set; }
+// }
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Net.Http.Headers;
@@ -7,6 +1814,8 @@ using ExactOnline.Models;
 using ExactOnline.Converters;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
+using ExactWebApp.Dto;
+using System.Collections.Concurrent;
 
 public class CustomerReports
 {
@@ -21,6 +1830,12 @@ public class CustomerReports
     private readonly string _tokenFile;
     private readonly ISettingsService _settingsService;
 
+    // ⚡ CACHE - API çağrılarını cache'le
+    private readonly ConcurrentDictionary<string, string> _salesOrderCache = 
+        new ConcurrentDictionary<string, string>();
+
+    // ⚡ HttpClient reuse
+    private readonly HttpClient _httpClient;
 
     public CustomerReports(
     string clientId,
@@ -44,20 +1859,24 @@ public class CustomerReports
         _settingsService = settingsService;
         _serviceProvider = serviceProvider;
         _logger = logger;
+
+        // ⚡ HttpClient singleton oluştur
+        _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
     }
 
-
-    //tarih ile
-     public async Task<List<TopCustomerDto>> GetTopCustomersDateRangeAsync(
+    //tarih ile - ⚡ OPTIMIZED
+    public async Task<List<TopCustomerDto>> GetTopCustomersDateRangeAsync(
         DateTime startDate,
         DateTime endDate,
-        int topCount = 5)
+        ReportFilterModel filter = null)
     {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        int topCount = filter?.TopCount ?? 5;
         try
         {
             _logger.LogInformation($"👥 Top {topCount} Müşteri Çıkartılıyor - Periyod: {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}");
 
-            // ExactSalesReports'u kullan
+            // ⚡ Satış siparişlerini al
             var rawOrdersJson = await GetSalesOrderByDateRangeAsync(startDate, endDate);
 
             if (rawOrdersJson == "[]")
@@ -66,14 +1885,44 @@ public class CustomerReports
                 return new List<TopCustomerDto>();
             }
 
+            // ⚡ JSON'dan müşteri verilerini verimli şekilde çıkart
+            var customerData = ExtractCustomerDataOptimized(rawOrdersJson);
+
+            if (!customerData.Any())
+            {
+                _logger.LogWarning("⚠️ Müşteri verisi bulunamadı");
+                return new List<TopCustomerDto>();
+            }
+
+            // ⚡ Filtrele ve sırala
+            var topCustomers = ApplyFiltersAndRankCustomers(
+                customerData, 
+                filter, 
+                topCount);
+
+            stopwatch.Stop();
+            _logger.LogInformation($"✅ {customerData.Count} müşteri bulundu, Top {topCustomers.Count} listelendi ({stopwatch.ElapsedMilliseconds}ms)");
+
+            return topCustomers;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"❌ Müşteri analiz hatası: {ex.Message}");
+            return null;
+        }
+    }
+
+    // ⚡ OPTİMİZED: JSON'dan müşteri verilerini verimli çıkart
+    private Dictionary<string, CustomerSalesData> ExtractCustomerDataOptimized(string rawOrdersJson)
+    {
+        var customerData = new Dictionary<string, CustomerSalesData>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
             using var doc = JsonDocument.Parse(rawOrdersJson);
-            var customerData = new Dictionary<string, CustomerSalesData>();
 
             if (!doc.RootElement.TryGetProperty("d", out var dataElement))
-            {
-                _logger.LogError("❌ Beklenmeyen JSON yapısı: 'd' property bulunamadı");
-                return null;
-            }
+                return customerData;
 
             JsonElement resultsElement;
             if (dataElement.ValueKind == JsonValueKind.Object &&
@@ -87,44 +1936,38 @@ public class CustomerReports
             }
             else
             {
-                _logger.LogError("❌ Beklenmeyen JSON yapısı");
-                return null;
+                return customerData;
             }
 
             var orderCount = 0;
 
+            // ⚡ Tek pass'te verileri işle
             foreach (var salesOrder in resultsElement.EnumerateArray())
             {
                 orderCount++;
 
-                // DeliverToName'i al
-                var customerName = salesOrder.TryGetProperty("DeliverToName", out var name)
-                    ? name.GetString() ?? "Bilinmeyen Müşteri"
-                    : "Bilinmeyen Müşteri";
-
-                // Sipariş tutarını al
-                double orderAmount = 0;
-                if (salesOrder.TryGetProperty("AmountDC", out var amount))
-                {
-                    orderAmount = SanitizeDouble(amount.GetDouble());
-                }
-                else if (salesOrder.TryGetProperty("AmountFC", out var topAmount))
-                {
-                    orderAmount = SanitizeDouble(topAmount.GetDouble());
-                }
-
+                // ⚡ Sadece gerekli property'leri al
+                var customerName = GetStringProperty(salesOrder, "DeliverToName") ?? "Bilinmeyen Müşteri";
+                
                 if (string.IsNullOrWhiteSpace(customerName) || customerName == "Bilinmeyen Müşteri")
-                {
-                    _logger.LogWarning($"⚠️ Sipariş {orderCount}: Müşteri adı boş");
                     continue;
+
+                // ⚡ Tutar: AmountDC varsa kullan, yoksa AmountFC
+                double orderAmount = 0;
+                if (salesOrder.TryGetProperty("AmountDC", out var amountDc))
+                {
+                    orderAmount = SanitizeDouble(amountDc.GetDouble());
+                }
+                else if (salesOrder.TryGetProperty("AmountFC", out var amountFc))
+                {
+                    orderAmount = SanitizeDouble(amountFc.GetDouble());
                 }
 
-                if (customerData.ContainsKey(customerName))
+                // ⚡ Dictionary'de var mı kontrol et
+                if (customerData.TryGetValue(customerName, out var existing))
                 {
-                    customerData[customerName].TotalOrderAmount += orderAmount;
-                    customerData[customerName].OrderCount++;
-                    customerData[customerName].AverageOrderAmount =
-                        customerData[customerName].TotalOrderAmount / customerData[customerName].OrderCount;
+                    existing.TotalOrderAmount += orderAmount;
+                    existing.OrderCount++;
                 }
                 else
                 {
@@ -132,60 +1975,104 @@ public class CustomerReports
                     {
                         CustomerName = customerName,
                         TotalOrderAmount = orderAmount,
-                        OrderCount = 1,
-                        AverageOrderAmount = orderAmount
+                        OrderCount = 1
                     };
                 }
             }
 
-            if (!customerData.Any())
+            // ⚡ AverageOrderAmount'ı bir kez hesapla (loop sonunda)
+            foreach (var customer in customerData.Values)
             {
-                _logger.LogWarning("⚠️ Müşteri verisi bulunamadı");
-                return new List<TopCustomerDto>();
+                customer.AverageOrderAmount = customer.OrderCount > 0 
+                    ? customer.TotalOrderAmount / customer.OrderCount 
+                    : 0;
             }
 
-            var totalSalesAmount = customerData.Values.Sum(x => x.TotalOrderAmount);
-
-            var topCustomers = customerData.Values
-                .OrderByDescending(x => x.OrderCount)
-                .ThenByDescending(x => x.TotalOrderAmount)
-                .Take(topCount)
-                .Select((c, index) => new TopCustomerDto
-                {
-                    Rank = index + 1,
-                    CustomerName = c.CustomerName,
-                    TotalOrders = c.OrderCount,
-                    TotalOrderAmount = SanitizeDouble(c.TotalOrderAmount),
-                    AverageOrderAmount = SanitizeDouble(c.AverageOrderAmount),
-                    PercentageOfTotalSales = SanitizeDouble((c.TotalOrderAmount / totalSalesAmount) * 100)
-                })
-                .ToList();
-
-            _logger.LogInformation($"✅ {orderCount} sipariş işlendi, {customerData.Count} farklı müşteri bulundu");
-            _logger.LogInformation($"✅ Top {topCustomers.Count} müşteri listelendi");
-            _logger.LogInformation($"💰 Toplam Satış Tutarı: ₺{SanitizeDouble(totalSalesAmount):N2}");
-
-            return topCustomers;
+            _logger.LogInformation($"✅ {orderCount} sipariş işlendi, {customerData.Count} müşteri bulundu");
         }
         catch (Exception ex)
         {
-            _logger.LogError($"❌ Müşteri analiz hatası: {ex.Message}");
-            return null;
+            _logger.LogError($"❌ JSON çıkarma hatası: {ex.Message}");
         }
+
+        return customerData;
+    }
+
+    // ⚡ OPTİMİZED: Filtrele ve sırala
+    private List<TopCustomerDto> ApplyFiltersAndRankCustomers(
+        Dictionary<string, CustomerSalesData> customerData,
+        ReportFilterModel filter,
+        int topCount)
+    {
+        // ⚡ Toplam satış tutarını bir kez hesapla
+        var totalSalesAmount = customerData.Values.Sum(x => x.TotalOrderAmount);
+
+        // ⚡ Filtrele
+        var filteredData = customerData.Values.AsEnumerable();
+
+        if (filter != null)
+        {
+            // ⚡ Hash set'e çevir (O(1) lookup)
+            if (filter.CustomerNames != null && filter.CustomerNames.Any())
+            {
+                var nameSet = new HashSet<string>(filter.CustomerNames, StringComparer.OrdinalIgnoreCase);
+                filteredData = filteredData.Where(c => nameSet.Contains(c.CustomerName));
+            }
+
+            if (!string.IsNullOrEmpty(filter.SearchTerm))
+            {
+                var searchLower = filter.SearchTerm.ToLowerInvariant();
+                filteredData = filteredData.Where(c =>
+                    c.CustomerName.ToLowerInvariant().Contains(searchLower));
+            }
+
+            if (filter.MinAmount.HasValue)
+            {
+                filteredData = filteredData.Where(c => c.TotalOrderAmount >= filter.MinAmount.Value);
+            }
+
+            if (filter.MaxAmount.HasValue)
+            {
+                filteredData = filteredData.Where(c => c.TotalOrderAmount <= filter.MaxAmount.Value);
+            }
+        }
+
+        // ⚡ Sırala ve Top N'yi seç
+        var topCustomers = filteredData
+            .OrderByDescending(x => x.OrderCount)
+            .ThenByDescending(x => x.TotalOrderAmount)
+            .Take(topCount)
+            .Select((c, index) => new TopCustomerDto
+            {
+                Rank = index + 1,
+                CustomerName = c.CustomerName,
+                TotalOrders = c.OrderCount,
+                TotalOrderAmount = SanitizeDouble(c.TotalOrderAmount),
+                AverageOrderAmount = SanitizeDouble(c.AverageOrderAmount),
+                PercentageOfTotalSales = totalSalesAmount > 0 
+                    ? SanitizeDouble((c.TotalOrderAmount / totalSalesAmount) * 100)
+                    : 0
+            })
+            .ToList();
+
+        _logger.LogInformation($"💰 Toplam Satış Tutarı: ₺{SanitizeDouble(totalSalesAmount):N2}");
+
+        return topCustomers;
     }
 
     /// <summary>
-    /// Belirtilen zaman aralığında en çok sipariş veren müşterileri getirir
+    /// Belirtilen zaman aralığında en çok sipariş veren müşterileri getirir - ⚡ OPTIMIZED
     /// </summary>
     public async Task<List<TopCustomerDto>> GetTopCustomersAsync(
         TimePeriod period = TimePeriod.OneYear,
-        int topCount = 5)
+        ReportFilterModel filter = null)
     {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        int topCount = filter?.TopCount ?? 5;
         try
         {
             _logger.LogInformation($"👥 Top {topCount} Müşteri Çıkartılıyor - Periyod: {period}");
 
-            // ExactSalesReports'u kullan
             var rawOrdersJson = await GetAllSalesOrderAsync(period);
 
             if (rawOrdersJson == "[]")
@@ -194,77 +2081,8 @@ public class CustomerReports
                 return new List<TopCustomerDto>();
             }
 
-            using var doc = JsonDocument.Parse(rawOrdersJson);
-            var customerData = new Dictionary<string, CustomerSalesData>();
-
-            if (!doc.RootElement.TryGetProperty("d", out var dataElement))
-            {
-                _logger.LogError("❌ Beklenmeyen JSON yapısı: 'd' property bulunamadı");
-                return null;
-            }
-
-            JsonElement resultsElement;
-            if (dataElement.ValueKind == JsonValueKind.Object &&
-                dataElement.TryGetProperty("results", out var res))
-            {
-                resultsElement = res;
-            }
-            else if (dataElement.ValueKind == JsonValueKind.Array)
-            {
-                resultsElement = dataElement;
-            }
-            else
-            {
-                _logger.LogError("❌ Beklenmeyen JSON yapısı");
-                return null;
-            }
-
-            var orderCount = 0;
-
-            foreach (var salesOrder in resultsElement.EnumerateArray())
-            {
-                orderCount++;
-
-                // DeliverToName'i al
-                var customerName = salesOrder.TryGetProperty("DeliverToName", out var name)
-                    ? name.GetString() ?? "Bilinmeyen Müşteri"
-                    : "Bilinmeyen Müşteri";
-
-                // Sipariş tutarını al
-                double orderAmount = 0;
-                if (salesOrder.TryGetProperty("AmountDC", out var amount))
-                {
-                    orderAmount = SanitizeDouble(amount.GetDouble());
-                }
-                else if (salesOrder.TryGetProperty("AmountFC", out var topAmount))
-                {
-                    orderAmount = SanitizeDouble(topAmount.GetDouble());
-                }
-
-                if (string.IsNullOrWhiteSpace(customerName) || customerName == "Bilinmeyen Müşteri")
-                {
-                    _logger.LogWarning($"⚠️ Sipariş {orderCount}: Müşteri adı boş");
-                    continue;
-                }
-
-                if (customerData.ContainsKey(customerName))
-                {
-                    customerData[customerName].TotalOrderAmount += orderAmount;
-                    customerData[customerName].OrderCount++;
-                    customerData[customerName].AverageOrderAmount =
-                        customerData[customerName].TotalOrderAmount / customerData[customerName].OrderCount;
-                }
-                else
-                {
-                    customerData[customerName] = new CustomerSalesData
-                    {
-                        CustomerName = customerName,
-                        TotalOrderAmount = orderAmount,
-                        OrderCount = 1,
-                        AverageOrderAmount = orderAmount
-                    };
-                }
-            }
+            // ⚡ Verimli veri çıkarma
+            var customerData = ExtractCustomerDataOptimized(rawOrdersJson);
 
             if (!customerData.Any())
             {
@@ -272,26 +2090,11 @@ public class CustomerReports
                 return new List<TopCustomerDto>();
             }
 
-            var totalSalesAmount = customerData.Values.Sum(x => x.TotalOrderAmount);
+            // ⚡ Filtrele ve sırala
+            var topCustomers = ApplyFiltersAndRankCustomers(customerData, filter, topCount);
 
-            var topCustomers = customerData.Values
-                .OrderByDescending(x => x.OrderCount)
-                .ThenByDescending(x => x.TotalOrderAmount)
-                .Take(topCount)
-                .Select((c, index) => new TopCustomerDto
-                {
-                    Rank = index + 1,
-                    CustomerName = c.CustomerName,
-                    TotalOrders = c.OrderCount,
-                    TotalOrderAmount = SanitizeDouble(c.TotalOrderAmount),
-                    AverageOrderAmount = SanitizeDouble(c.AverageOrderAmount),
-                    PercentageOfTotalSales = SanitizeDouble((c.TotalOrderAmount / totalSalesAmount) * 100)
-                })
-                .ToList();
-
-            _logger.LogInformation($"✅ {orderCount} sipariş işlendi, {customerData.Count} farklı müşteri bulundu");
-            _logger.LogInformation($"✅ Top {topCustomers.Count} müşteri listelendi");
-            _logger.LogInformation($"💰 Toplam Satış Tutarı: ₺{SanitizeDouble(totalSalesAmount):N2}");
+            stopwatch.Stop();
+            _logger.LogInformation($"✅ Top {topCustomers.Count} müşteri listelendi ({stopwatch.ElapsedMilliseconds}ms)");
 
             return topCustomers;
         }
@@ -303,15 +2106,15 @@ public class CustomerReports
     }
 
     /// <summary>
-    /// Belirtilen zaman aralığında müşteri performansını analiz eder
+    /// Belirtilen zaman aralığında müşteri performansını analiz eder - ⚡ OPTIMIZED
     /// </summary>
     public async Task<CustomerAnalysisDto> AnalyzeCustomersAsync(
         TimePeriod period = TimePeriod.OneYear,
-        int topCustomerCount = 5)
+        ReportFilterModel filter = null)
     {
         try
         {
-            var topCustomers = await GetTopCustomersAsync(period, topCustomerCount);
+            var topCustomers = await GetTopCustomersAsync(period, filter);
 
             if (topCustomers == null || !topCustomers.Any())
             {
@@ -322,16 +2125,17 @@ public class CustomerReports
                 };
             }
 
+            // ⚡ Toplamları bir kez hesapla
             var totalOrders = topCustomers.Sum(x => x.TotalOrders);
             var totalAmount = topCustomers.Sum(x => x.TotalOrderAmount);
-            var averageOrderAmount = topCustomers.Average(x => x.AverageOrderAmount);
-            var averageCustomerValue = totalAmount / topCustomers.Count;
+            var averageOrderAmount = totalOrders > 0 ? totalAmount / totalOrders : 0;
+            var averageCustomerValue = topCustomers.Count > 0 ? totalAmount / topCustomers.Count : 0;
 
             return new CustomerAnalysisDto
             {
                 Success = true,
                 Period = period.ToString(),
-                TopCustomerCount = topCustomerCount,
+                TopCustomerCount = topCustomers.Count,
                 TotalCustomerCount = topCustomers.Count,
                 TotalOrderCount = totalOrders,
                 TotalSalesAmount = SanitizeDouble(totalAmount),
@@ -351,15 +2155,17 @@ public class CustomerReports
             };
         }
     }
+
+    // ⚡ OPTİMİZED: Müşteri listelerini karşılaştır
     private List<CustomerComparisonDetailDto> CompareCustomerLists(
         List<TopCustomerDto> currentCustomers,
         List<TopCustomerDto> previousCustomers)
     {
         var comparisons = new List<CustomerComparisonDetailDto>();
 
-        // Müşteriler için dictionary oluştur
+        // ⚡ Dictionary'e dönüştür (O(1) lookup)
         var previousDict = previousCustomers
-            .ToDictionary(x => x.CustomerName, x => x);
+            .ToDictionary(x => x.CustomerName, x => x, StringComparer.OrdinalIgnoreCase);
 
         foreach (var current in currentCustomers)
         {
@@ -379,8 +2185,8 @@ public class CustomerReports
                 comparison.PreviousAmount = SanitizeDouble(previous.TotalOrderAmount);
                 comparison.PreviousPercentage = SanitizeDouble(previous.PercentageOfTotalSales);
 
-                // Farklılıkları hesapla
-                comparison.RankChange = previous.Rank - current.Rank; // Negatif = düştü, pozitif = yükseldi
+                // ⚡ Farklılıkları hesapla
+                comparison.RankChange = previous.Rank - current.Rank;
                 comparison.OrderChange = current.TotalOrders - previous.TotalOrders;
                 comparison.AmountChange = SanitizeDouble(current.TotalOrderAmount - previous.TotalOrderAmount);
                 comparison.AmountChangePercent = previous.TotalOrderAmount > 0
@@ -390,13 +2196,13 @@ public class CustomerReports
             }
             else
             {
-                comparison.Status = "🆕 Yeni"; // Yeni müşteri
+                comparison.Status = "🆕 Yeni";
             }
 
             comparisons.Add(comparison);
         }
 
-        // Önceki dönemde var ama şimdiki dönemde top'ta olmayan müşteriler
+        // ⚡ Yeni müşteriler (öncekide var ama şimdikide top değil)
         foreach (var previous in previousCustomers)
         {
             if (!currentCustomers.Any(x => x.CustomerName == previous.CustomerName))
@@ -408,29 +2214,35 @@ public class CustomerReports
                     PreviousOrders = previous.TotalOrders,
                     PreviousAmount = SanitizeDouble(previous.TotalOrderAmount),
                     PreviousPercentage = SanitizeDouble(previous.PercentageOfTotalSales),
-                    Status = "❌ Çıktı" // Top'tan çıktı
+                    Status = "❌ Çıktı"
                 });
             }
         }
 
         return comparisons.OrderBy(x => x.CurrentRank ?? x.PreviousRank).ToList();
     }
+
+    // ⚡ OPTİMİZED: Periyod karşılaştırması
     public async Task<CustomerComparisonAnalysisDto> ComparePeriodsAsync(
        TimePeriod currentPeriod = TimePeriod.OneMonth,
        TimePeriod previousPeriod = TimePeriod.OneMonth,
-       int topCount = 5)
+       ReportFilterModel filter = null)
     {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        int topCount = filter?.TopCount ?? 5;
         try
         {
             _logger.LogInformation($"📊 Periyod Karşılaştırması Başlatılıyor");
-            _logger.LogInformation($"   - Şimdiki Periyod: {currentPeriod}");
-            _logger.LogInformation($"   - Önceki Periyod: {previousPeriod}");
+            _logger.LogInformation($"   - Şimdiki: {currentPeriod} | Önceki: {previousPeriod}");
 
-            // Şimdiki dönemin verilerini al
-            var currentAnalysis = await AnalyzeCustomersAsync(currentPeriod, topCount);
+            // ⚡ İki periyodu PARALEL olarak işle
+            var currentTask = AnalyzeCustomersAsync(currentPeriod, filter);
+            var previousTask = AnalyzeCustomersAsync(previousPeriod, filter);
 
-            // Önceki dönemin verilerini al
-            var previousAnalysis = await AnalyzeCustomersAsync(previousPeriod, topCount);
+            await Task.WhenAll(currentTask, previousTask);
+
+            var currentAnalysis = currentTask.Result;
+            var previousAnalysis = previousTask.Result;
 
             if (!currentAnalysis.Success || !previousAnalysis.Success)
             {
@@ -441,7 +2253,7 @@ public class CustomerReports
                 };
             }
 
-            // Karşılaştırma verilerini hesapla
+            // ⚡ Karşılaştırma verilerini hesapla
             var currentAmount = currentAnalysis.TotalSalesAmount;
             var previousAmount = previousAnalysis.TotalSalesAmount;
 
@@ -466,10 +2278,13 @@ public class CustomerReports
                 ? ((double)customerDifference / previousCustomerCount) * 100
                 : 0;
 
-            // Müşteri seviyesinde karşılaştırma
+            // ⚡ Müşteri karşılaştırması
             var customerComparisons = CompareCustomerLists(
                 currentAnalysis.TopCustomers,
                 previousAnalysis.TopCustomers);
+
+            stopwatch.Stop();
+            _logger.LogInformation($"✅ Periyod karşılaştırması tamamlandı ({stopwatch.ElapsedMilliseconds}ms)");
 
             return new CustomerComparisonAnalysisDto
             {
@@ -478,34 +2293,28 @@ public class CustomerReports
                 CurrentPeriod = currentPeriod.ToString(),
                 PreviousPeriod = previousPeriod.ToString(),
 
-                // Satış Tutarı Karşılaştırması
                 CurrentAmount = SanitizeDouble(currentAmount),
                 PreviousAmount = SanitizeDouble(previousAmount),
                 AmountDifference = SanitizeDouble(amountDifference),
                 AmountDifferencePercent = SanitizeDouble(amountDifferencePercent),
                 AmountTrend = GetTrend(amountDifferencePercent),
 
-                // Sipariş Sayısı Karşılaştırması
                 CurrentOrderCount = currentOrderCount,
                 PreviousOrderCount = previousOrderCount,
                 OrderDifference = orderDifference,
                 OrderDifferencePercent = SanitizeDouble(orderDifferencePercent),
                 OrderTrend = GetTrend(orderDifferencePercent),
 
-                // Müşteri Sayısı Karşılaştırması
                 CurrentCustomerCount = currentCustomerCount,
                 PreviousCustomerCount = previousCustomerCount,
                 CustomerDifference = customerDifference,
                 CustomerDifferencePercent = SanitizeDouble(customerDifferencePercent),
                 CustomerTrend = GetTrend(customerDifferencePercent),
 
-                // Ortalama Sipariş Tutarı
                 CurrentAverageOrderAmount = SanitizeDouble(currentAnalysis.AverageOrderAmount),
                 PreviousAverageOrderAmount = SanitizeDouble(previousAnalysis.AverageOrderAmount),
-                AverageOrderDifference = SanitizeDouble(
-                    currentAnalysis.AverageOrderAmount - previousAnalysis.AverageOrderAmount),
+                AverageOrderDifference = SanitizeDouble(currentAnalysis.AverageOrderAmount - previousAnalysis.AverageOrderAmount),
 
-                // Müşteri Seviyesi Karşılaştırması
                 CurrentTopCustomers = currentAnalysis.TopCustomers,
                 PreviousTopCustomers = previousAnalysis.TopCustomers,
                 CustomerComparisons = customerComparisons
@@ -523,28 +2332,29 @@ public class CustomerReports
     }
 
     /// <summary>
-    /// İki farklı tarih aralığını karşılaştırır (Geliştirilmiş versyon)
+    /// İki farklı tarih aralığını karşılaştırır - ⚡ OPTIMIZED
     /// </summary>
     public async Task<CustomerComparisonAnalysisDto> CompareDateRangesAsync(
         DateRangeQuery currentRange,
         DateRangeQuery previousRange,
-        int topCount = 5)
+        ReportFilterModel filter = null)
     {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        int topCount = filter?.TopCount ?? 5;
         try
         {
             _logger.LogInformation($"📊 Tarih Aralığı Karşılaştırması Başlatıldı");
             _logger.LogInformation($"   - Şimdiki: {currentRange.Description} ({currentRange})");
             _logger.LogInformation($"   - Önceki: {previousRange.Description} ({previousRange})");
 
-            // Şimdiki dönemin verilerini al (tarih aralığı ile)
-            var currentOrdersJson = await GetSalesOrderByDateRangeAsync(
-                currentRange.StartDate,
-                currentRange.EndDate);
+            // ⚡ İki tarih aralığını PARALEL olarak işle
+            var currentTask = GetSalesOrderByDateRangeAsync(currentRange.StartDate, currentRange.EndDate);
+            var previousTask = GetSalesOrderByDateRangeAsync(previousRange.StartDate, previousRange.EndDate);
 
-            // Önceki dönemin verilerini al (tarih aralığı ile)
-            var previousOrdersJson = await GetSalesOrderByDateRangeAsync(
-                previousRange.StartDate,
-                previousRange.EndDate);
+            await Task.WhenAll(currentTask, previousTask);
+
+            var currentOrdersJson = currentTask.Result;
+            var previousOrdersJson = previousTask.Result;
 
             if (currentOrdersJson == "[]" && previousOrdersJson == "[]")
             {
@@ -555,11 +2365,11 @@ public class CustomerReports
                 };
             }
 
-            // Müşteri verilerini çıkart
-            var currentCustomers = ExtractCustomerDataFromJson(currentOrdersJson, currentRange.Description);
-            var previousCustomers = ExtractCustomerDataFromJson(previousOrdersJson, previousRange.Description);
+            // ⚡ Müşteri verilerini çıkart
+            var currentCustomerData = ExtractCustomerDataOptimized(currentOrdersJson);
+            var previousCustomerData = ExtractCustomerDataOptimized(previousOrdersJson);
 
-            if (!currentCustomers.Any() && !previousCustomers.Any())
+            if (!currentCustomerData.Any() && !previousCustomerData.Any())
             {
                 return new CustomerComparisonAnalysisDto
                 {
@@ -568,52 +2378,14 @@ public class CustomerReports
                 };
             }
 
-            // Top müşterileri seç
-            var currentTopCustomers = currentCustomers.Values
-                .OrderByDescending(x => x.OrderCount)
-                .ThenByDescending(x => x.TotalOrderAmount)
-                .Take(topCount)
-                .Select((c, index) => new TopCustomerDto
-                {
-                    Rank = index + 1,
-                    CustomerName = c.CustomerName,
-                    TotalOrders = c.OrderCount,
-                    TotalOrderAmount = SanitizeDouble(c.TotalOrderAmount),
-                    AverageOrderAmount = SanitizeDouble(c.AverageOrderAmount),
-                    PercentageOfTotalSales = 0  // Aşağıda hesaplanacak
-                })
-                .ToList();
+            // ⚡ Filtrele ve sırala
+            var currentTopCustomers = ApplyFiltersAndRankCustomers(currentCustomerData, filter, topCount);
+            var previousTopCustomers = ApplyFiltersAndRankCustomers(previousCustomerData, filter, topCount);
 
-            var previousTopCustomers = previousCustomers.Values
-                .OrderByDescending(x => x.OrderCount)
-                .ThenByDescending(x => x.TotalOrderAmount)
-                .Take(topCount)
-                .Select((c, index) => new TopCustomerDto
-                {
-                    Rank = index + 1,
-                    CustomerName = c.CustomerName,
-                    TotalOrders = c.OrderCount,
-                    TotalOrderAmount = SanitizeDouble(c.TotalOrderAmount),
-                    AverageOrderAmount = SanitizeDouble(c.AverageOrderAmount),
-                    PercentageOfTotalSales = 0  // Aşağıda hesaplanacak
-                })
-                .ToList();
-
-            // Yüzdeleri hesapla
+            // ⚡ Toplamları hesapla
             var currentTotal = currentTopCustomers.Sum(x => x.TotalOrderAmount);
             var previousTotal = previousTopCustomers.Sum(x => x.TotalOrderAmount);
 
-            currentTopCustomers.ForEach(c =>
-                c.PercentageOfTotalSales = currentTotal > 0
-                    ? (c.TotalOrderAmount / currentTotal) * 100
-                    : 0);
-
-            previousTopCustomers.ForEach(c =>
-                c.PercentageOfTotalSales = previousTotal > 0
-                    ? (c.TotalOrderAmount / previousTotal) * 100
-                    : 0);
-
-            // Karşılaştırma yap
             var amountDifference = currentTotal - previousTotal;
             var amountDifferencePercent = previousTotal > 0
                 ? (amountDifference / previousTotal) * 100
@@ -637,9 +2409,10 @@ public class CustomerReports
 
             var customerComparisons = CompareCustomerLists(currentTopCustomers, previousTopCustomers);
 
-            _logger.LogInformation($"✅ Karşılaştırma tamamlandı");
-            _logger.LogInformation($"   - Şimdiki: ₺{currentTotal:N2} ({currentOrderCount} sipariş, {currentCustomerCount} müşteri)");
-            _logger.LogInformation($"   - Önceki: ₺{previousTotal:N2} ({previousOrderCount} sipariş, {previousCustomerCount} müşteri)");
+            stopwatch.Stop();
+            _logger.LogInformation($"✅ Tarih aralığı karşılaştırması tamamlandı ({stopwatch.ElapsedMilliseconds}ms)");
+            _logger.LogInformation($"   - Şimdiki: ₺{currentTotal:N2} ({currentOrderCount} sipariş)");
+            _logger.LogInformation($"   - Önceki: ₺{previousTotal:N2} ({previousOrderCount} sipariş)");
             _logger.LogInformation($"   - Fark: {amountDifferencePercent:+0.00;-0.00;0.00}%");
 
             return new CustomerComparisonAnalysisDto
@@ -667,12 +2440,8 @@ public class CustomerReports
                 CustomerDifferencePercent = SanitizeDouble(customerDifferencePercent),
                 CustomerTrend = GetTrend(customerDifferencePercent),
 
-                CurrentAverageOrderAmount = currentOrderCount > 0
-                    ? currentTotal / currentOrderCount
-                    : 0,
-                PreviousAverageOrderAmount = previousOrderCount > 0
-                    ? previousTotal / previousOrderCount
-                    : 0,
+                CurrentAverageOrderAmount = currentOrderCount > 0 ? currentTotal / currentOrderCount : 0,
+                PreviousAverageOrderAmount = previousOrderCount > 0 ? previousTotal / previousOrderCount : 0,
                 AverageOrderDifference = (currentOrderCount > 0 ? currentTotal / currentOrderCount : 0) -
                                          (previousOrderCount > 0 ? previousTotal / previousOrderCount : 0),
 
@@ -692,97 +2461,6 @@ public class CustomerReports
         }
     }
 
-    /// <summary>
-    /// JSON'dan müşteri verilerini çıkart
-    /// </summary>
-    private Dictionary<string, CustomerSalesData> ExtractCustomerDataFromJson(
-        string rawOrdersJson,
-        string periodDescription)
-    {
-        var customerData = new Dictionary<string, CustomerSalesData>();
-
-        if (rawOrdersJson == "[]")
-        {
-            _logger.LogWarning($"⚠️ {periodDescription}: Veri bulunamadı");
-            return customerData;
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(rawOrdersJson);
-
-            if (!doc.RootElement.TryGetProperty("d", out var dataElement))
-            {
-                _logger.LogError($"❌ {periodDescription}: 'd' property bulunamadı");
-                return customerData;
-            }
-
-            JsonElement resultsElement;
-            if (dataElement.ValueKind == JsonValueKind.Object &&
-                dataElement.TryGetProperty("results", out var res))
-            {
-                resultsElement = res;
-            }
-            else if (dataElement.ValueKind == JsonValueKind.Array)
-            {
-                resultsElement = dataElement;
-            }
-            else
-            {
-                _logger.LogError($"❌ {periodDescription}: Beklenmeyen JSON yapısı");
-                return customerData;
-            }
-
-            var orderCount = 0;
-            foreach (var salesOrder in resultsElement.EnumerateArray())
-            {
-                orderCount++;
-
-                var customerName = salesOrder.TryGetProperty("DeliverToName", out var name)
-                    ? name.GetString() ?? "Bilinmeyen Müşteri"
-                    : "Bilinmeyen Müşteri";
-
-                double orderAmount = 0;
-                if (salesOrder.TryGetProperty("AmountDC", out var amount))
-                {
-                    orderAmount = SanitizeDouble(amount.GetDouble());
-                }
-                else if (salesOrder.TryGetProperty("AmountFC", out var topAmount))
-                {
-                    orderAmount = SanitizeDouble(topAmount.GetDouble());
-                }
-
-                if (string.IsNullOrWhiteSpace(customerName) || customerName == "Bilinmeyen Müşteri")
-                    continue;
-
-                if (customerData.ContainsKey(customerName))
-                {
-                    customerData[customerName].TotalOrderAmount += orderAmount;
-                    customerData[customerName].OrderCount++;
-                    customerData[customerName].AverageOrderAmount =
-                        customerData[customerName].TotalOrderAmount / customerData[customerName].OrderCount;
-                }
-                else
-                {
-                    customerData[customerName] = new CustomerSalesData
-                    {
-                        CustomerName = customerName,
-                        TotalOrderAmount = orderAmount,
-                        OrderCount = 1,
-                        AverageOrderAmount = orderAmount
-                    };
-                }
-            }
-
-            _logger.LogInformation($"✅ {periodDescription}: {orderCount} sipariş, {customerData.Count} müşteri");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError($"❌ {periodDescription} JSON çıkarma hatası: {ex.Message}");
-        }
-
-        return customerData;
-    }
     private string GetTrend(double percentageChange)
     {
         if (percentageChange > 5)
@@ -796,6 +2474,7 @@ public class CustomerReports
         else
             return "➡️ Sabit";
     }
+
     private string GetCustomerStatus(int orderChange, double amountChange)
     {
         if (orderChange > 0 && amountChange > 0)
@@ -808,15 +2487,27 @@ public class CustomerReports
             return "➡️ Sabit";
     }
 
+    // ⚡ Helper: String property'yi güvenli al
+    private string GetStringProperty(JsonElement element, string propertyName)
+    {
+        if (element.TryGetProperty(propertyName, out var property) && 
+            property.ValueKind == JsonValueKind.String)
+        {
+            return property.GetString();
+        }
+        return null;
+    }
+
     private double SanitizeDouble(double value)
     {
         if (double.IsNaN(value) || double.IsInfinity(value))
             return 0;
         return value;
     }
+
+    // ⚡ OPTİMİZED: Tüm satış siparişlerini al (cache ile)
     public async Task<string> GetAllSalesOrderAsync(TimePeriod period = TimePeriod.OneYear)
     {
-
         var exactService = _serviceProvider.GetRequiredService<ExactService>();
         var token = await exactService.GetValidToken();
 
@@ -826,17 +2517,16 @@ public class CustomerReports
             return "[]";
         }
 
-        using var client = new HttpClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        _httpClient.DefaultRequestHeaders.Accept.Clear();
+        _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         try
         {
-            var allSalesOrders = new List<JsonElement>();
+            var allSalesOrders = new ConcurrentBag<JsonElement>();
             int pageSize = 60;
             int skip = 0;
 
-            // Belirtilen periyoda göre başlangıç tarihini hesapla
             int daysBack = (int)period;
             var startDate = DateTime.UtcNow.AddDays(-daysBack).ToString("yyyy-MM-dd");
 
@@ -853,9 +2543,9 @@ public class CustomerReports
                          $"&$top={pageSize}" +
                          $"&$skip={skip}";
 
-                _logger.LogInformation($"📄 Sayfa {pageNumber} çekiliyor... (Skip: {skip}, Toplam: {allSalesOrders.Count})");
+                _logger.LogDebug($"📄 Sayfa {pageNumber} çekiliyor... (Skip: {skip}, Toplam: {allSalesOrders.Count})");
 
-                var response = await client.GetAsync(url);
+                var response = await _httpClient.GetAsync(url);
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -872,7 +2562,6 @@ public class CustomerReports
                     JsonElement dataToProcess = default;
                     bool found = false;
 
-                    // Case 1: "d" array olarak gelmiş
                     if (root.TryGetProperty("d", out var dProperty))
                     {
                         if (dProperty.ValueKind == JsonValueKind.Array)
@@ -880,7 +2569,6 @@ public class CustomerReports
                             dataToProcess = dProperty;
                             found = true;
                         }
-                        // Case 2: "d" object içinde "results"
                         else if (dProperty.ValueKind == JsonValueKind.Object &&
                                  dProperty.TryGetProperty("results", out var results))
                         {
@@ -888,7 +2576,6 @@ public class CustomerReports
                             found = true;
                         }
                     }
-                    // Case 3: "value" property
                     else if (root.TryGetProperty("value", out var valueElement))
                     {
                         dataToProcess = valueElement;
@@ -912,7 +2599,9 @@ public class CustomerReports
                         }
                         else
                         {
-                            allSalesOrders.AddRange(items);
+                            // ⚡ ConcurrentBag kullan (thread-safe)
+                            foreach (var item in items)
+                                allSalesOrders.Add(item);
                             skip += pageSize;
                             pageNumber++;
                         }
@@ -928,13 +2617,13 @@ public class CustomerReports
                     break;
                 }
 
-                await Task.Delay(500);
+                await Task.Delay(100);  // ⚡ Delay'i azalt
             }
 
             _logger.LogInformation($"✅ Toplam {allSalesOrders.Count} satış siparişi başarıyla alındı");
 
             var finalResult = new { d = allSalesOrders };
-            return JsonSerializer.Serialize(finalResult, new JsonSerializerOptions { WriteIndented = true });
+            return JsonSerializer.Serialize(finalResult, new JsonSerializerOptions { WriteIndented = false });  // ⚡ Indented false
         }
         catch (Exception ex)
         {
@@ -943,12 +2632,21 @@ public class CustomerReports
         }
     }
 
-    
-
+    // ⚡ OPTİMİZED: Tarih aralığına göre satış siparişlerini al (cache ile)
     public async Task<string> GetSalesOrderByDateRangeAsync(
-    DateTime startDate,
-    DateTime endDate)
+        DateTime startDate,
+        DateTime endDate)
     {
+        // ⚡ Cache key oluştur
+        var cacheKey = $"SO_{startDate:yyyy-MM-dd}_{endDate:yyyy-MM-dd}";
+        
+        // ⚡ Cache'de var mı kontrol et
+        if (_salesOrderCache.TryGetValue(cacheKey, out var cachedResult))
+        {
+            _logger.LogDebug($"💾 Cache HIT: {cacheKey}");
+            return cachedResult;
+        }
+
         var exactService = _serviceProvider.GetRequiredService<ExactService>();
         var token = await exactService.GetValidToken();
 
@@ -958,17 +2656,16 @@ public class CustomerReports
             return "[]";
         }
 
-        using var client = new HttpClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        _httpClient.DefaultRequestHeaders.Accept.Clear();
+        _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         try
         {
-            var allSalesOrders = new List<JsonElement>();
+            var allSalesOrders = new ConcurrentBag<JsonElement>();
             int pageSize = 60;
             int skip = 0;
 
-            // Tarih aralığını Exact Online format'ına çevir
             var startDateStr = startDate.ToString("yyyy-MM-dd");
             var endDateStr = endDate.ToString("yyyy-MM-dd");
 
@@ -979,17 +2676,15 @@ public class CustomerReports
 
             while (hasMoreData)
             {
-                // Filter: Belirtilen tarih aralığında olan siparişler
-                // Başlangıç tarihi >= startDate AND Başlangıç tarihi <= endDate
                 var filter = $"$filter=Created ge datetime'{startDateStr}' and Created le datetime'{endDateStr}'";
                 var url = $"{_baseUrl}/api/v1/{_divisionCode}/salesorder/SalesOrders" +
                          $"?{filter}" +
                          $"&$top={pageSize}" +
                          $"&$skip={skip}";
 
-                _logger.LogInformation($"📄 Sayfa {pageNumber} çekiliyor... (Skip: {skip}, Toplam: {allSalesOrders.Count})");
+                _logger.LogDebug($"📄 Sayfa {pageNumber} çekiliyor... (Skip: {skip}, Toplam: {allSalesOrders.Count})");
 
-                var response = await client.GetAsync(url);
+                var response = await _httpClient.GetAsync(url);
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -1006,7 +2701,6 @@ public class CustomerReports
                     JsonElement dataToProcess = default;
                     bool found = false;
 
-                    // Case 1: "d" array olarak gelmiş
                     if (root.TryGetProperty("d", out var dProperty))
                     {
                         if (dProperty.ValueKind == JsonValueKind.Array)
@@ -1014,7 +2708,6 @@ public class CustomerReports
                             dataToProcess = dProperty;
                             found = true;
                         }
-                        // Case 2: "d" object içinde "results"
                         else if (dProperty.ValueKind == JsonValueKind.Object &&
                                  dProperty.TryGetProperty("results", out var results))
                         {
@@ -1022,7 +2715,6 @@ public class CustomerReports
                             found = true;
                         }
                     }
-                    // Case 3: "value" property
                     else if (root.TryGetProperty("value", out var valueElement))
                     {
                         dataToProcess = valueElement;
@@ -1046,7 +2738,8 @@ public class CustomerReports
                         }
                         else
                         {
-                            allSalesOrders.AddRange(items);
+                            foreach (var item in items)
+                                allSalesOrders.Add(item);
                             skip += pageSize;
                             pageNumber++;
                         }
@@ -1062,13 +2755,18 @@ public class CustomerReports
                     break;
                 }
 
-                await Task.Delay(500);
+                await Task.Delay(100);  // ⚡ Delay'i azalt
             }
 
             _logger.LogInformation($"✅ Toplam {allSalesOrders.Count} satış siparişi başarıyla alındı");
 
             var finalResult = new { d = allSalesOrders };
-            return JsonSerializer.Serialize(finalResult, new JsonSerializerOptions { WriteIndented = true });
+            var jsonResult = JsonSerializer.Serialize(finalResult, new JsonSerializerOptions { WriteIndented = false });
+
+            // ⚡ Cache'e ekle
+            _salesOrderCache.TryAdd(cacheKey, jsonResult);
+
+            return jsonResult;
         }
         catch (Exception ex)
         {
@@ -1076,7 +2774,245 @@ public class CustomerReports
             return "[]";
         }
     }
+
+    //son 3 ayda sipariş vermeyen müşteriler - ⚡ OPTIMIZED
+    public async Task<List<InactiveCustomerDto>> GetInactiveCustomersAsync(
+        TimePeriod period = TimePeriod.ThreeMonths,
+        ReportFilterModel filter = null)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            _logger.LogInformation($"👥 İnaktif müşteriler çıkartılıyor - Periyod: {period}");
+
+            // ⚡ Paralel olarak iki işlemi yap
+            var ordersTask = GetAllSalesOrderAsync(period);
+            var customersTask = GetAllActiveCustomersAsync();
+
+            await Task.WhenAll(ordersTask, customersTask);
+
+            var rawOrdersJson = ordersTask.Result;
+            var allActiveCustomers = customersTask.Result;
+
+            if (rawOrdersJson == "[]")
+            {
+                _logger.LogWarning("⚠️ Sipariş verisi alınamadı");
+                return new List<InactiveCustomerDto>();
+            }
+
+            if (allActiveCustomers == null || !allActiveCustomers.Any())
+            {
+                _logger.LogWarning("⚠️ Aktif müşteri verisi alınamadı");
+                return new List<InactiveCustomerDto>();
+            }
+
+            // ⚡ Sipariş veren müşterileri HashSet'e al (O(1) lookup)
+            var customersWithOrders = ExtractCustomersWithOrdersOptimized(rawOrdersJson);
+
+            _logger.LogInformation($"✅ {customersWithOrders.Count} müşteri son {period} içinde sipariş vermiş");
+            _logger.LogInformation($"✅ Toplam {allActiveCustomers.Count} aktif müşteri bulundu");
+
+            // ⚡ İnaktif müşterileri bul ve sırala
+            var inactiveCustomers = allActiveCustomers
+                .Where(c => !customersWithOrders.Contains(c.Name))
+                .Select((c, index) => new InactiveCustomerDto
+                {
+                    Rank = index + 1,
+                    CustomerName = c.Name,
+                    AccountCode = c.Code,
+                    Email = c.Email,
+                    Phone = c.Phone,
+                    City = c.City,
+                    Country = c.Country,
+                    LastActivityDate = c.Modified
+                })
+                .ToList();
+
+            // ⚡ Filtrele
+            if (filter != null)
+            {
+                var filteredCustomers = inactiveCustomers.AsEnumerable();
+
+                if (filter.CustomerNames != null && filter.CustomerNames.Any())
+                {
+                    var nameSet = new HashSet<string>(filter.CustomerNames, StringComparer.OrdinalIgnoreCase);
+                    filteredCustomers = filteredCustomers.Where(c => nameSet.Contains(c.CustomerName));
+                }
+
+                if (!string.IsNullOrEmpty(filter.SearchTerm))
+                {
+                    var searchLower = filter.SearchTerm.ToLowerInvariant();
+                    filteredCustomers = filteredCustomers.Where(c => 
+                        c.CustomerName.ToLowerInvariant().Contains(searchLower) ||
+                        (c.Email != null && c.Email.ToLowerInvariant().Contains(searchLower)) ||
+                        (c.AccountCode != null && c.AccountCode.ToLowerInvariant().Contains(searchLower)));
+                }
+
+                inactiveCustomers = filteredCustomers.ToList();
+            }
+
+            stopwatch.Stop();
+            _logger.LogInformation($"✅ {inactiveCustomers.Count} inaktif müşteri bulundu ({stopwatch.ElapsedMilliseconds}ms)");
+            
+            return inactiveCustomers;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"❌ İnaktif müşteri analiz hatası: {ex.Message}");
+            return new List<InactiveCustomerDto>();
+        }
+    }
+
+    // ⚡ OPTİMİZED: Sipariş veren müşterileri HashSet'e al
+    private HashSet<string> ExtractCustomersWithOrdersOptimized(string rawOrdersJson)
+    {
+        var customersWithOrders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawOrdersJson);
+
+            if (!doc.RootElement.TryGetProperty("d", out var dataElement))
+                return customersWithOrders;
+
+            JsonElement resultsElement;
+            if (dataElement.ValueKind == JsonValueKind.Object && 
+                dataElement.TryGetProperty("results", out var res))
+            {
+                resultsElement = res;
+            }
+            else if (dataElement.ValueKind == JsonValueKind.Array)
+            {
+                resultsElement = dataElement;
+            }
+            else
+            {
+                return customersWithOrders;
+            }
+
+            foreach (var salesOrder in resultsElement.EnumerateArray())
+            {
+                var customerName = GetStringProperty(salesOrder, "DeliverToName");
+                
+                if (!string.IsNullOrWhiteSpace(customerName))
+                {
+                    customersWithOrders.Add(customerName);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"❌ Müşteri çıkarma hatası: {ex.Message}");
+        }
+
+        return customersWithOrders;
+    }
+
+    // ⚡ OPTİMİZED: Tüm aktif müşterileri getir (paralel pagination)
+    private async Task<List<ActiveCustomerInfo>> GetAllActiveCustomersAsync()
+    {
+        try
+        {
+            var exactService = _serviceProvider.GetRequiredService<ExactService>();
+            var token = await exactService.GetValidToken();
+
+            if (token == null)
+            {
+                _logger.LogError("❌ Geçerli bir token alınamadı");
+                return new List<ActiveCustomerInfo>();
+            }
+
+            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+            _httpClient.DefaultRequestHeaders.Accept.Clear();
+            _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            int top = 60;
+            int skip = 0;
+            var allCustomers = new ConcurrentBag<ActiveCustomerInfo>();
+
+            while (true)
+            {
+                var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Status eq 'C'&$top={top}&$skip={skip}";
+                
+                var response = await _httpClient.GetAsync(url);
+                
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogError($"❌ API hatası: {response.StatusCode}");
+                    break;
+                }
+
+                var content = await response.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(content);
+
+                if (!doc.RootElement.TryGetProperty("d", out var dataElement))
+                    break;
+
+                JsonElement resultsElement;
+                if (dataElement.ValueKind == JsonValueKind.Object && 
+                    dataElement.TryGetProperty("results", out var res))
+                {
+                    resultsElement = res;
+                }
+                else if (dataElement.ValueKind == JsonValueKind.Array)
+                {
+                    resultsElement = dataElement;
+                }
+                else
+                {
+                    break;
+                }
+
+                int countInPage = 0;
+                foreach (var account in resultsElement.EnumerateArray())
+                {
+                    var customer = new ActiveCustomerInfo
+                    {
+                        Name = GetStringProperty(account, "Name") ?? "",
+                        Code = GetStringProperty(account, "Code") ?? "",
+                        Email = GetStringProperty(account, "Email"),
+                        Phone = GetStringProperty(account, "Phone"),
+                        City = GetStringProperty(account, "City"),
+                        Country = GetStringProperty(account, "Country"),
+                        Modified = account.TryGetProperty("Modified", out var modified) 
+                            ? (modified.TryGetDateTime(out var modDate) ? modDate : (DateTime?)null)
+                            : null
+                    };
+
+                    if (!string.IsNullOrWhiteSpace(customer.Name))
+                    {
+                        allCustomers.Add(customer);
+                        countInPage++;
+                    }
+                }
+
+                _logger.LogDebug($"📄 Sayfa {skip / top + 1}: {countInPage} müşteri alındı. Toplam: {allCustomers.Count}");
+
+                if (countInPage < top) break;
+                skip += top;
+                await Task.Delay(50);  // ⚡ Delay'i azalt
+            }
+
+            return allCustomers.ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"❌ Aktif müşteri getirme hatası: {ex.Message}");
+            return new List<ActiveCustomerInfo>();
+        }
+    }
+
+    // ⚡ Cache temizle
+    public void ClearCache()
+    {
+        _salesOrderCache.Clear();
+        _logger.LogInformation("🗑️ Satış siparişi cache temizlendi");
+    }
 }
+
+// ============================================
+// DTOs (Değişmemiş)
+// ============================================
 
 public class CustomerSalesData
 {
@@ -1109,103 +3045,61 @@ public class CustomerAnalysisDto
     public double AverageCustomerValue { get; set; }
     public List<TopCustomerDto> TopCustomers { get; set; }
 }
+
 public class CustomerComparisonDetailDto
 {
     public string CustomerName { get; set; }
-
-    // Şimdiki Dönem
     public int? CurrentRank { get; set; }
     public int CurrentOrders { get; set; }
     public double CurrentAmount { get; set; }
     public double CurrentPercentage { get; set; }
-
-    // Önceki Dönem
     public int? PreviousRank { get; set; }
     public int PreviousOrders { get; set; }
     public double PreviousAmount { get; set; }
     public double PreviousPercentage { get; set; }
-
-    // Farklılıklar
-    public int? RankChange { get; set; } // Negatif = düştü, pozitif = yükseldi
+    public int? RankChange { get; set; }
     public int OrderChange { get; set; }
     public double AmountChange { get; set; }
     public double AmountChangePercent { get; set; }
-
-    // Durum
-    public string Status { get; set; } // 📈 Büyüyor, 📉 Düşüyor, 🆕 Yeni, ❌ Çıktı
+    public string Status { get; set; }
 }
+
 public class CustomerComparisonAnalysisDto
 {
     public bool Success { get; set; }
     public string Message { get; set; }
-
-    // Periyod Bilgileri
     public string CurrentPeriod { get; set; }
     public string PreviousPeriod { get; set; }
-
-    // Satış Tutarı Karşılaştırması
     public double CurrentAmount { get; set; }
     public double PreviousAmount { get; set; }
     public double AmountDifference { get; set; }
     public double AmountDifferencePercent { get; set; }
     public string AmountTrend { get; set; }
-
-    // Sipariş Sayısı Karşılaştırması
     public int CurrentOrderCount { get; set; }
     public int PreviousOrderCount { get; set; }
     public int OrderDifference { get; set; }
     public double OrderDifferencePercent { get; set; }
     public string OrderTrend { get; set; }
-
-    // Müşteri Sayısı Karşılaştırması
     public int CurrentCustomerCount { get; set; }
     public int PreviousCustomerCount { get; set; }
     public int CustomerDifference { get; set; }
     public double CustomerDifferencePercent { get; set; }
     public string CustomerTrend { get; set; }
-
-    // Ortalama Değerler
     public double CurrentAverageOrderAmount { get; set; }
     public double PreviousAverageOrderAmount { get; set; }
     public double AverageOrderDifference { get; set; }
-
-    // Müşteri Listeleri
     public List<TopCustomerDto> CurrentTopCustomers { get; set; }
     public List<TopCustomerDto> PreviousTopCustomers { get; set; }
-
-    // Müşteri Seviyesi Karşılaştırması
     public List<CustomerComparisonDetailDto> CustomerComparisons { get; set; }
 }
 
-
-/// <summary>
-/// Belirli bir tarih aralığında veri çekmeyi sağlayan DTO
-/// </summary>
 public class DateRangeQuery
 {
-    /// <summary>
-    /// Başlangıç tarihi (inclusive)
-    /// </summary>
     public DateTime StartDate { get; set; }
-
-    /// <summary>
-    /// Bitiş tarihi (inclusive)
-    /// </summary>
     public DateTime EndDate { get; set; }
-
-    /// <summary>
-    /// Kaç gün olduğunu gösterir (bilgi amaçlı)
-    /// </summary>
     public int DayCount => (EndDate - StartDate).Days + 1;
-
-    /// <summary>
-    /// Tarih aralığının açıklaması (raporlarda kullanmak için)
-    /// </summary>
     public string Description { get; set; }
 
-    /// <summary>
-    /// Constructor
-    /// </summary>
     public DateRangeQuery(DateTime startDate, DateTime endDate, string description = "")
     {
         StartDate = startDate;
@@ -1219,32 +3113,20 @@ public class DateRangeQuery
     }
 }
 
-/// <summary>
-/// Ortak tarih aralığı sorguları
-/// </summary>
 public static class DateRangeFactory
 {
-    /// <summary>
-    /// Bugün
-    /// </summary>
     public static DateRangeQuery Today()
     {
         var now = DateTime.UtcNow.Date;
         return new DateRangeQuery(now, now, "Bugün");
     }
 
-    /// <summary>
-    /// Dün
-    /// </summary>
     public static DateRangeQuery Yesterday()
     {
         var yesterday = DateTime.UtcNow.Date.AddDays(-1);
         return new DateRangeQuery(yesterday, yesterday, "Dün");
     }
 
-    /// <summary>
-    /// Son N gün (bugün dahil)
-    /// </summary>
     public static DateRangeQuery LastDays(int dayCount)
     {
         var endDate = DateTime.UtcNow.Date;
@@ -1252,9 +3134,6 @@ public static class DateRangeFactory
         return new DateRangeQuery(startDate, endDate, $"Son {dayCount} gün");
     }
 
-    /// <summary>
-    /// Önceki N gün
-    /// </summary>
     public static DateRangeQuery PreviousDays(int dayCount)
     {
         var endDate = DateTime.UtcNow.Date.AddDays(-1);
@@ -1262,13 +3141,9 @@ public static class DateRangeFactory
         return new DateRangeQuery(startDate, endDate, $"Önceki {dayCount} gün");
     }
 
-    /// <summary>
-    /// Bu hafta (Pazartesi-Pazar)
-    /// </summary>
     public static DateRangeQuery ThisWeek()
     {
         var today = DateTime.UtcNow.Date;
-        // Pazartesi: 0 = Pazar, 1 = Pazartesi
         var dayOfWeek = (int)today.DayOfWeek;
         var daysToMonday = dayOfWeek == 0 ? 6 : dayOfWeek - 1;
         var startDate = today.AddDays(-daysToMonday);
@@ -1276,9 +3151,6 @@ public static class DateRangeFactory
         return new DateRangeQuery(startDate, endDate, "Bu hafta");
     }
 
-    /// <summary>
-    /// Geçen hafta
-    /// </summary>
     public static DateRangeQuery LastWeek()
     {
         var lastWeek = LastDays(7);
@@ -1287,9 +3159,6 @@ public static class DateRangeFactory
         return new DateRangeQuery(startDate, endDate, "Geçen hafta");
     }
 
-    /// <summary>
-    /// Bu ay
-    /// </summary>
     public static DateRangeQuery ThisMonth()
     {
         var today = DateTime.UtcNow.Date;
@@ -1298,9 +3167,6 @@ public static class DateRangeFactory
         return new DateRangeQuery(startDate, endDate, "Bu ay");
     }
 
-    /// <summary>
-    /// Geçen ay
-    /// </summary>
     public static DateRangeQuery LastMonth()
     {
         var today = DateTime.UtcNow.Date;
@@ -1309,25 +3175,16 @@ public static class DateRangeFactory
         return new DateRangeQuery(startDate, endDate, "Geçen ay");
     }
 
-    /// <summary>
-    /// Son 30 gün
-    /// </summary>
     public static DateRangeQuery Last30Days()
     {
         return LastDays(30);
     }
 
-    /// <summary>
-    /// Önceki 30 gün
-    /// </summary>
     public static DateRangeQuery Previous30Days()
     {
         return PreviousDays(30);
     }
 
-    /// <summary>
-    /// Bu yıl
-    /// </summary>
     public static DateRangeQuery ThisYear()
     {
         var today = DateTime.UtcNow.Date;
@@ -1336,9 +3193,6 @@ public static class DateRangeFactory
         return new DateRangeQuery(startDate, endDate, "Bu yıl");
     }
 
-    /// <summary>
-    /// Geçen yıl
-    /// </summary>
     public static DateRangeQuery LastYear()
     {
         var today = DateTime.UtcNow.Date;
@@ -1347,9 +3201,6 @@ public static class DateRangeFactory
         return new DateRangeQuery(startDate, endDate, "Geçen yıl");
     }
 
-    /// <summary>
-    /// Son N aya göre (bugün dahil)
-    /// </summary>
     public static DateRangeQuery LastMonths(int monthCount)
     {
         var endDate = DateTime.UtcNow.Date;
@@ -1357,9 +3208,6 @@ public static class DateRangeFactory
         return new DateRangeQuery(startDate, endDate, $"Son {monthCount} ay");
     }
 
-    /// <summary>
-    /// Önceki N aya göre
-    /// </summary>
     public static DateRangeQuery PreviousMonths(int monthCount)
     {
         var today = DateTime.UtcNow.Date;
@@ -1368,85 +3216,66 @@ public static class DateRangeFactory
         return new DateRangeQuery(startDate, endDate, $"Önceki {monthCount} ay");
     }
 
-    /// <summary>
-    /// Dün ile Bugün karşılaştırması
-    /// </summary>
     public static (DateRangeQuery current, DateRangeQuery previous) YesterdayVsToday()
     {
         return (Today(), Yesterday());
     }
 
-    /// <summary>
-    /// Bu hafta ile Geçen hafta karşılaştırması
-    /// </summary>
     public static (DateRangeQuery current, DateRangeQuery previous) ThisWeekVsLastWeek()
     {
         return (ThisWeek(), LastWeek());
     }
 
-    /// <summary>
-    /// Bu ay ile Geçen ay karşılaştırması
-    /// </summary>
     public static (DateRangeQuery current, DateRangeQuery previous) ThisMonthVsLastMonth()
     {
         return (ThisMonth(), LastMonth());
     }
 
-    /// <summary>
-    /// Bu yıl ile Geçen yıl karşılaştırması
-    /// </summary>
     public static (DateRangeQuery current, DateRangeQuery previous) ThisYearVsLastYear()
     {
         return (ThisYear(), LastYear());
     }
 
-    /// <summary>
-    /// Son 30 gün ile Önceki 30 gün karşılaştırması
-    /// </summary>
     public static (DateRangeQuery current, DateRangeQuery previous) Last30DaysVsPrevious30Days()
     {
         return (Last30Days(), Previous30Days());
     }
 
-    /// <summary>
-    /// Son 3 ay ile Önceki 3 ay karşılaştırması
-    /// </summary>
     public static (DateRangeQuery current, DateRangeQuery previous) Last3MonthsVsPrevious3Months()
     {
         return (LastMonths(3), PreviousMonths(3));
     }
 }
 
-// ============================================
-// KULLANIM ÖRNEKLERİ
-// ============================================
+public class InactiveCustomerDto
+{
+    public int Rank { get; set; }
+    public string CustomerName { get; set; }
+    private string _accountCode;
+    public string AccountCode 
+    { 
+        get => _accountCode;
+        set => _accountCode = value?.Trim();
+    }
+    public string? Email { get; set; }
+    public string? Phone { get; set; }
+    public string? City { get; set; }
+    public string? Country { get; set; }
+    public DateTime? LastActivityDate { get; set; }
+}
 
-/*
-
-// Örnek 1: Bugün vs Dün
-var ranges = DateRangeFactory.YesterdayVsToday();
-Console.WriteLine($"Şimdiki: {ranges.current}");
-Console.WriteLine($"Önceki: {ranges.previous}");
-
-// Örnek 2: Bu ay vs Geçen ay
-var ranges2 = DateRangeFactory.ThisMonthVsLastMonth();
-Console.WriteLine($"Şimdiki: {ranges2.current}");
-Console.WriteLine($"Önceki: {ranges2.previous}");
-
-// Örnek 3: Özel tarih aralığı
-var custom = new DateRangeQuery(
-    new DateTime(2024, 01, 01),
-    new DateTime(2024, 01, 31),
-    "Ocak 2024"
-);
-Console.WriteLine($"Özel: {custom}");
-
-// Örnek 4: Son 7 gün
-var last7 = DateRangeFactory.LastDays(7);
-Console.WriteLine($"Son 7 Gün: {last7}");
-
-// Örnek 5: Önceki 7 gün
-var prev7 = DateRangeFactory.PreviousDays(7);
-Console.WriteLine($"Önceki 7 Gün: {prev7}");
-
-*/
+internal class ActiveCustomerInfo
+{
+    public string Name { get; set; }
+    private string _code;
+    public string Code 
+    { 
+        get => _code;
+        set => _code = value?.Trim();
+    }
+    public string? Email { get; set; }
+    public string? Phone { get; set; }
+    public string? City { get; set; }
+    public string? Country { get; set; }
+    public DateTime? Modified { get; set; }
+}

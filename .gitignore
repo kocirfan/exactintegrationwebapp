@@ -6,6 +6,7 @@ obj/
 *.csproj
 *.vs/
 Data/
+!Data/ApplicationDbContext.cs
 .gitignore/
 
 # Visual Studio Code

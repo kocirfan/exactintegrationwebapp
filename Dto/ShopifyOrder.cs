@@ -81,6 +81,9 @@ public class ShopifyOrder
     
     [JsonPropertyName("current_total_tax")]
     public string current_total_tax { get; set; }
+
+    [JsonPropertyName("note_attributes")]
+    public List<ShopifyNoteAttribute> NoteAttributes { get; set; } = new();
 }
 
 public class ShopifyLineItem
@@ -190,4 +193,13 @@ public class ShopifyShippingLine
 
     [JsonPropertyName("code")]
     public string Code { get; set; }
+}
+
+public class ShopifyNoteAttribute
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; }
+
+    [JsonPropertyName("value")]
+    public string Value { get; set; }
 }

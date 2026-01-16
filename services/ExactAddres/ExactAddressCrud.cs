@@ -302,137 +302,137 @@ public class ExactAddressCrud
     }
 
     /// Müşteri için yeni adres oluşturur
-   public async Task<ExactAddress> CreateAddress(ExactAddress address)
-{
-    var exactService = _serviceProvider.GetRequiredService<ExactService>();
-    var token = await exactService.GetValidToken();
-
-    if (token == null)
+    public async Task<ExactAddress> CreateAddress(ExactAddress address)
     {
-        _logger.LogError("Token alınamadı");
-        return null;
-    }
+        var exactService = _serviceProvider.GetRequiredService<ExactService>();
+        var token = await exactService.GetValidToken();
 
-    using var client = new HttpClient();
-    client.DefaultRequestHeaders.Authorization =
-        new AuthenticationHeaderValue("Bearer", token.access_token);
-    client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-    try
-{
-    var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Addresses";
-
-    _logger.LogInformation($"📝 Adres oluşturuluyor - Account: {address.AccountId}, Type: {address.Type}");
-
-    var addressDto = new
-    {
-        Account = address.AccountId.ToString("D"),
-        AddressLine1 = string.IsNullOrEmpty(address.AddressLine1) ? null : address.AddressLine1,
-        AddressLine2 = string.IsNullOrEmpty(address.AddressLine2) ? null : address.AddressLine2,
-        AddressLine3 = string.IsNullOrEmpty(address.AddressLine3) ? null : address.AddressLine3,
-        City = string.IsNullOrEmpty(address.City) ? null : address.City,
-        Country = string.IsNullOrEmpty(address.CountryCode) ? null : address.CountryCode,
-        Postcode = string.IsNullOrEmpty(address.PostalCode) ? null : address.PostalCode,
-        Type = address.Type ?? 3,
-        Main = address.IsMain
-    };
-
-    var json = JsonSerializer.Serialize(addressDto, new JsonSerializerOptions 
-    { 
-        WriteIndented = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-    });
-
-    _logger.LogInformation($"📤 Gönderilen JSON:\n{json}");
-
-    var content = new StringContent(json, Encoding.UTF8, "application/json");
-    var response = await client.PostAsync(url, content);
-
-    if (!response.IsSuccessStatusCode)
-    {
-        _logger.LogError($"❌ Adres oluşturma hatası: {response.StatusCode} ({response.ReasonPhrase})");
-        var errorContent = await response.Content.ReadAsStringAsync();
-        _logger.LogError($"📋 Tam hata: {errorContent}");
-        return null;
-    }
-
-    var responseContent = await response.Content.ReadAsStringAsync();
-    _logger.LogInformation($"✅ Adres API Cevabı:\n{responseContent}");
-
-    using var doc = JsonDocument.Parse(responseContent);
-    
-    if (doc.RootElement.TryGetProperty("d", out var dElement))
-    {
-        var addressJson = dElement.GetRawText();
-        
-        // ID'yi al
-        if (dElement.TryGetProperty("ID", out var idElement))
+        if (token == null)
         {
-            var createdId = idElement.GetString();
-            _logger.LogInformation($"✅ Adres oluşturuldu. ID: {createdId}");
-            
-            // ✅ YENİ: ID ile adresi tekrar çek
-            var fullAddress = await GetAddressById(createdId);
-            
-            if (fullAddress != null)
+            _logger.LogError("Token alınamadı");
+            return null;
+        }
+
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        try
+        {
+            var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Addresses";
+
+            _logger.LogInformation($"📝 Adres oluşturuluyor - Account: {address.AccountId}, Type: {address.Type}");
+
+            var addressDto = new
             {
-                _logger.LogInformation($"✅ Adres başarıyla oluşturuldu ve veriler çekildi: {fullAddress.AddressLine1}, {fullAddress.City}");
-                return fullAddress;
+                Account = address.AccountId.ToString("D"),
+                AddressLine1 = string.IsNullOrEmpty(address.AddressLine1) ? null : address.AddressLine1,
+                AddressLine2 = string.IsNullOrEmpty(address.AddressLine2) ? null : address.AddressLine2,
+                AddressLine3 = string.IsNullOrEmpty(address.AddressLine3) ? null : address.AddressLine3,
+                City = string.IsNullOrEmpty(address.City) ? null : address.City,
+                Country = string.IsNullOrEmpty(address.CountryCode) ? null : address.CountryCode,
+                Postcode = string.IsNullOrEmpty(address.PostalCode) ? null : address.PostalCode,
+                Type = address.Type ?? 3,
+                Main = address.IsMain
+            };
+
+            var json = JsonSerializer.Serialize(addressDto, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+            });
+
+            _logger.LogInformation($"📤 Gönderilen JSON:\n{json}");
+
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+            var response = await client.PostAsync(url, content);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError($"❌ Adres oluşturma hatası: {response.StatusCode} ({response.ReasonPhrase})");
+                var errorContent = await response.Content.ReadAsStringAsync();
+                _logger.LogError($"📋 Tam hata: {errorContent}");
+                return null;
+            }
+
+            var responseContent = await response.Content.ReadAsStringAsync();
+            _logger.LogInformation($"✅ Adres API Cevabı:\n{responseContent}");
+
+            using var doc = JsonDocument.Parse(responseContent);
+
+            if (doc.RootElement.TryGetProperty("d", out var dElement))
+            {
+                var addressJson = dElement.GetRawText();
+
+                // ID'yi al
+                if (dElement.TryGetProperty("ID", out var idElement))
+                {
+                    var createdId = idElement.GetString();
+                    _logger.LogInformation($"✅ Adres oluşturuldu. ID: {createdId}");
+
+                    // ✅ YENİ: ID ile adresi tekrar çek
+                    var fullAddress = await GetAddressById(createdId);
+
+                    if (fullAddress != null)
+                    {
+                        _logger.LogInformation($"✅ Adres başarıyla oluşturuldu ve veriler çekildi: {fullAddress.AddressLine1}, {fullAddress.City}");
+                        return fullAddress;
+                    }
+                    else
+                    {
+                        _logger.LogWarning($"⚠️ Adres oluşturuldu ama detaylı veriler çekilemedi. ID: {createdId}");
+                        // En azından ID'yi ata
+                        var minimalAddress = new ExactAddress { Id = Guid.Parse(createdId) };
+                        return minimalAddress;
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning($"⚠️ Response'da ID bulunamadı.");
+                    return null;
+                }
             }
             else
             {
-                _logger.LogWarning($"⚠️ Adres oluşturuldu ama detaylı veriler çekilemedi. ID: {createdId}");
-                // En azından ID'yi ata
-                var minimalAddress = new ExactAddress { Id = Guid.Parse(createdId) };
-                return minimalAddress;
+                _logger.LogWarning($"⚠️ Beklenilen 'd' property'si bulunamadı.");
+                return null;
             }
         }
-        else
+        catch (JsonException jsonEx)
         {
-            _logger.LogWarning($"⚠️ Response'da ID bulunamadı.");
+            _logger.LogError($"❌ JSON Parse Hatası: {jsonEx.Message}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"❌ CreateAddress hatası: {ex.Message}");
             return null;
         }
     }
-    else
+
+    // ---
+
+    /// <summary>
+
+
+
+    private string PreProcessAddressJson(string json)
     {
-        _logger.LogWarning($"⚠️ Beklenilen 'd' property'si bulunamadı.");
-        return null;
-    }
-}
-catch (JsonException jsonEx)
-{
-    _logger.LogError($"❌ JSON Parse Hatası: {jsonEx.Message}");
-    return null;
-}
-catch (Exception ex)
-{
-    _logger.LogError($"❌ CreateAddress hatası: {ex.Message}");
-    return null;
-}
-}
+        try
+        {
+            // Eğer "d" sarması varsa, direkt döndür
+            if (json.Contains("\"d\""))
+                return json;
 
-// ---
-
-/// <summary>
-
-
-
-private string PreProcessAddressJson(string json)
-{
-    try
-    {
-        // Eğer "d" sarması varsa, direkt döndür
-        if (json.Contains("\"d\""))
+            // Eğer sarması yoksa (örneğin sadece obje ise), "d" ekle
+            return json; // Veya wrap et: $"{{\"d\":{json}}}"
+        }
+        catch
+        {
             return json;
-
-        // Eğer sarması yoksa (örneğin sadece obje ise), "d" ekle
-        return json; // Veya wrap et: $"{{\"d\":{json}}}"
+        }
     }
-    catch
-    {
-        return json;
-    }
-}
 
     /// Adresi günceller
     public async Task<bool> UpdateAddress(string addressId, ExactAddress address)

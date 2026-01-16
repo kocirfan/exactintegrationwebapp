@@ -4,9 +4,12 @@ using Microsoft.AspNetCore.Cors; // Bunu ekleyin
 using Newtonsoft.Json;
 using System.Text;
 using ExactOnline.Models;
+using Microsoft.AspNetCore.Authorization;
 
 namespace ShopifyProductApp.Controllers
+
 {
+    // [Authorize]
     [ApiController]
     [Route("api/[controller]")]
     // [EnableCors("AllowAll")] // CORS'u etkinleştir
@@ -133,5 +136,16 @@ namespace ShopifyProductApp.Controllers
             return Ok(order);
         }
 
+          [HttpGet("shopifyorder/{orderId}")]
+        public async Task<IActionResult> GetJustShopifyOrderById(long orderId)
+        {
+            
+            var order = await _shopifyOrderCrud.JustGetOrderByIdAsync(orderId);
+            if (order == null)
+            {
+                return NotFound(new { message = $"Shopify sipariş {orderId} bulunamadı" });
+            }
+            return Ok(order);
+        }
     }
 }

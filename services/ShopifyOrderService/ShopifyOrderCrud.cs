@@ -677,6 +677,31 @@ public class ShopifyOrderCrud
         _logger = logger;
         _serviceProvider = serviceProvider;
     }
+    //just get order
+    public async Task<ShopifyOrder?> JustGetOrderByIdAsync(long orderId)
+    {
+        var response = await _client.GetAsync($"orders/{orderId}.json");
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogError("Shopify sipariş getirilemedi");
+            return null;
+        }
+
+        var content = await response.Content.ReadAsStringAsync();
+
+        // JsonDocument ile manuel parse
+        using var doc = JsonDocument.Parse(content);
+        if (doc.RootElement.TryGetProperty("order", out var orderElement))
+        {
+            var order = JsonSerializer.Deserialize<ShopifyOrder>(
+                orderElement.GetRawText(),
+                _jsonOptions
+            );
+            return order;
+        }
+
+        return null;
+    }
 
     // manuel olarak shopify sipariş getir
     public async Task<ShopifyOrder?> GetOrderByIdAsync(long orderId)
@@ -838,61 +863,61 @@ public class ShopifyOrderCrud
             if (addressesDiffer)
             {
                 var billing = shopifyOrder.BillingAddress;
-                var customerBillingAddress = await GetCustomerBillingAddressesWithDelay(customerId.Value.ToString());
+                // var customerBillingAddress = await GetCustomerBillingAddressesWithDelay(customerId.Value.ToString());
                 
-                if (customerBillingAddress.Count > 0)
-                {
-                    bool addressFound = false;
-                    foreach (var address in customerBillingAddress)
-                    {
-                        _logger.LogInformation($"   🔍 Exact'teki fatura adresi: {address.AddressLine1}, {address.PostalCode} {address.City}");
+                // if (customerBillingAddress.Count > 0)
+                // {
+                //     bool addressFound = false;
+                //     foreach (var address in customerBillingAddress)
+                //     {
+                //         _logger.LogInformation($"   🔍 Exact'teki fatura adresi: {address.AddressLine1}, {address.PostalCode} {address.City}");
 
-                        if (address.FullAddress == billing.Address1 + ", " + billing.Zip + ", " + billing.City)
-                        {
-                            address.IsMain = true;
-                            await _exactAddressCrud.UpdateAddress(address.Id.ToString(), address);
-                            await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
-                            _logger.LogInformation("   ✅ Exact'teki fatura adresi Shopify fatura adresi ile eşleşiyor.");
-                            addressFound = true;
-                            break;
-                        }
-                    }
-                    if (!addressFound)
-                    {
-                        await CreateNewBillingAddress(billing, customerId.Value.ToString());
-                    }
-                    else
-                    {
-                        _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te bulundu ve kullanılacak.");
-                    }
-                }
-                else
-                {
-                    ExactAddress newBillingAddress = new ExactAddress
-                    {
-                        AccountId = Guid.Parse(customerId.Value.ToString()),
-                        Type = 3, // 3 = Fatura Adresi
-                        AddressLine1 = billing.Address1 ?? "",
-                        AddressLine2 = billing.Address2 ?? "",
-                        City = billing.City ?? "",
-                        PostalCode = billing.Zip ?? "",
-                        IsMain = true,
-                        CountryCode = billing.CountryCode ?? "",
-                        AccountName = $"{billing.FirstName} {billing.LastName}" ?? "",
-                        Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
-                    };
+                //         if (address.FullAddress == billing.Address1 + ", " + billing.Zip + ", " + billing.City)
+                //         {
+                //             address.IsMain = true;
+                //             await _exactAddressCrud.UpdateAddress(address.Id.ToString(), address);
+                //             await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
+                //             _logger.LogInformation("   ✅ Exact'teki fatura adresi Shopify fatura adresi ile eşleşiyor.");
+                //             addressFound = true;
+                //             break;
+                //         }
+                //     }
+                //     if (!addressFound)
+                //     {
+                //         await CreateNewBillingAddress(billing, customerId.Value.ToString());
+                //     }
+                //     else
+                //     {
+                //         _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te bulundu ve kullanılacak.");
+                //     }
+                // }
+                // else
+                // {
+                //     ExactAddress newBillingAddress = new ExactAddress
+                //     {
+                //         AccountId = Guid.Parse(customerId.Value.ToString()),
+                //         Type = 3, // 3 = Fatura Adresi
+                //         AddressLine1 = billing.Address1 ?? "",
+                //         AddressLine2 = billing.Address2 ?? "",
+                //         City = billing.City ?? "",
+                //         PostalCode = billing.Zip ?? "",
+                //         IsMain = true,
+                //         CountryCode = billing.CountryCode ?? "",
+                //         AccountName = $"{billing.FirstName} {billing.LastName}" ?? "",
+                //         Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
+                //     };
 
-                    var createdAddress = await _exactAddressCrud.CreateAddress(newBillingAddress);
-                    await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
-                    if (createdAddress != null)
-                    {
-                        _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te oluşturuldu ve kullanılacak.");
-                    }
-                    else
-                    {
-                        _logger.LogWarning("   ⚠️ Müşterinin fatura adresi oluşturulamadı.");
-                    }
-                }
+                //     var createdAddress = await _exactAddressCrud.CreateAddress(newBillingAddress);
+                //     await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
+                //     if (createdAddress != null)
+                //     {
+                //         _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te oluşturuldu ve kullanılacak.");
+                //     }
+                //     else
+                //     {
+                //         _logger.LogWarning("   ⚠️ Müşterinin fatura adresi oluşturulamadı.");
+                //     }
+                // }
 
                 // Delivery Address
                 var delivery = shopifyOrder.ShippingAddress;
@@ -955,61 +980,61 @@ public class ShopifyOrderCrud
             else
             {
                 var billing = shopifyOrder.BillingAddress;
-                var customerBillingAddress = await GetCustomerBillingAddressesWithDelay(customerId.Value.ToString());
+                //var customerBillingAddress = await GetCustomerBillingAddressesWithDelay(customerId.Value.ToString());
                 
-                if (customerBillingAddress.Count > 0)
-                {
-                    bool addressFound = false;
-                    foreach (var address in customerBillingAddress)
-                    {
-                        _logger.LogInformation($"   🔍 Exact'teki fatura adresi: {address.AddressLine1}, {address.PostalCode} {address.City}");
+                // if (customerBillingAddress.Count > 0)
+                // {
+                //     bool addressFound = false;
+                //     foreach (var address in customerBillingAddress)
+                //     {
+                //         _logger.LogInformation($"   🔍 Exact'teki fatura adresi: {address.AddressLine1}, {address.PostalCode} {address.City}");
 
-                        if (address.FullAddress == billing.Address1 + ", " + billing.Zip + ", " + billing.City)
-                        {
-                            address.IsMain = true;
-                            await _exactAddressCrud.UpdateAddress(address.Id.ToString(), address);
-                            await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
-                            _logger.LogInformation("   ✅ Exact'teki fatura adresi Shopify fatura adresi ile eşleşiyor.");
-                            addressFound = true;
-                            break;
-                        }
-                    }
-                    if (!addressFound)
-                    {
-                        await CreateNewBillingAddress(billing, customerId.Value.ToString());
-                    }
-                    else
-                    {
-                        _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te bulundu ve kullanılacak.");
-                    }
-                }
-                else
-                {
-                    ExactAddress newBillingAddress = new ExactAddress
-                    {
-                        AccountId = Guid.Parse(customerId.Value.ToString()),
-                        Type = 3, // 3 = Fatura Adresi
-                        AddressLine1 = billing.Address1 ?? "",
-                        AddressLine2 = billing.Address2 ?? "",
-                        City = billing.City ?? "",
-                        PostalCode = billing.Zip ?? "",
-                        IsMain = true,
-                        CountryCode = billing.CountryCode ?? "",
-                        AccountName = $"{billing.FirstName} {billing.LastName}" ?? "",
-                        Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
-                    };
+                //         if (address.FullAddress == billing.Address1 + ", " + billing.Zip + ", " + billing.City)
+                //         {
+                //             address.IsMain = true;
+                //             await _exactAddressCrud.UpdateAddress(address.Id.ToString(), address);
+                //             await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
+                //             _logger.LogInformation("   ✅ Exact'teki fatura adresi Shopify fatura adresi ile eşleşiyor.");
+                //             addressFound = true;
+                //             break;
+                //         }
+                //     }
+                //     if (!addressFound)
+                //     {
+                //         await CreateNewBillingAddress(billing, customerId.Value.ToString());
+                //     }
+                //     else
+                //     {
+                //         _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te bulundu ve kullanılacak.");
+                //     }
+                // }
+                // else
+                // {
+                //     ExactAddress newBillingAddress = new ExactAddress
+                //     {
+                //         AccountId = Guid.Parse(customerId.Value.ToString()),
+                //         Type = 3, // 3 = Fatura Adresi
+                //         AddressLine1 = billing.Address1 ?? "",
+                //         AddressLine2 = billing.Address2 ?? "",
+                //         City = billing.City ?? "",
+                //         PostalCode = billing.Zip ?? "",
+                //         IsMain = true,
+                //         CountryCode = billing.CountryCode ?? "",
+                //         AccountName = $"{billing.FirstName} {billing.LastName}" ?? "",
+                //         Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
+                //     };
 
-                    var createdAddress = await _exactAddressCrud.CreateAddress(newBillingAddress);
-                    await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
-                    if (createdAddress != null)
-                    {
-                        _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te oluşturuldu ve kullanılacak.");
-                    }
-                    else
-                    {
-                        _logger.LogWarning("   ⚠️ Müşterinin fatura adresi oluşturulamadı.");
-                    }
-                }
+                //     var createdAddress = await _exactAddressCrud.CreateAddress(newBillingAddress);
+                //     await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
+                //     if (createdAddress != null)
+                //     {
+                //         _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te oluşturuldu ve kullanılacak.");
+                //     }
+                //     else
+                //     {
+                //         _logger.LogWarning("   ⚠️ Müşterinin fatura adresi oluşturulamadı.");
+                //     }
+                // }
 
                 var delivery = shopifyOrder.ShippingAddress;
                 if (delivery != null)
@@ -1083,7 +1108,9 @@ public class ShopifyOrderCrud
             if (shopifyOrder.ShippingLines != null && shopifyOrder.ShippingLines.Any())
             {
                 var shippingLine = shopifyOrder.ShippingLines.FirstOrDefault();
-                bool hasVerzendkosten = shippingLine?.Title?.Contains("Verzendkosten") ?? false;
+                bool hasVerzendkosten =
+                    shippingLine?.Title?.Contains("Verzendkosten") == true ||
+                    shippingLine?.Title?.Contains("Gratis") == true;
                 bool hasShippingAddress = shopifyOrder.ShippingAddress != null;
                 if (hasVerzendkosten && hasShippingAddress)
                 {
@@ -1125,7 +1152,7 @@ public class ShopifyOrderCrud
             _logger.LogInformation($"Sipariş hazırlandı - Satır: {salesOrderLines.Count}");
 
             // 4. ExactOnline'a gönder
-            var success = await _exactService.CreateSalesOrderAsync(exactOrder);
+            var (success, exactOrderId, exactOrderNumber) = await _exactService.CreateSalesOrderAsync(exactOrder);
             return success;
         }
         catch (Exception ex)

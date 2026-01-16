@@ -2,6 +2,11 @@
 using ShopifyProductApp.Services;
 using ShopifyProductApp.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
+using ShopifyProductApp.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -12,6 +17,41 @@ builder.Logging.AddDebug();
 // Add services to the container
 builder.Services.AddControllers();
 builder.Services.AddMemoryCache();
+
+// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo { Title = "ExactWebApp API", Version = "v1" });
+
+    // JWT Authorization configuration
+    c.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+    {
+        Description = "JWT Authorization header using the Bearer scheme. \r\n\r\n Enter 'Bearer' [space] and then your token in the text input below.\r\n\r\nExample: \"Bearer 12345abcdef\"",
+        Name = "Authorization",
+        In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+        Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey,
+        Scheme = "Bearer"
+    });
+
+    c.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement()
+    {
+        {
+            new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+            {
+                Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                {
+                    Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                },
+                Scheme = "oauth2",
+                Name = "Bearer",
+                In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+            },
+            new List<string>()
+        }
+    });
+});
 
 // ✨ CORS ekle
 builder.Services.AddCors(options =>
@@ -27,6 +67,32 @@ builder.Services.AddCors(options =>
 // Entity Framework Configuration
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("ApplicationConnection")));
+
+// ✨ Identity Configuration
+builder.Services.AddIdentity<ApplicationUser, IdentityRole>()
+    .AddEntityFrameworkStores<ApplicationDbContext>()
+    .AddDefaultTokenProviders();
+
+// ✨ JWT Authentication Configuration
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(options =>
+{
+    options.SaveToken = true;
+    options.RequireHttpsMetadata = false;
+    options.TokenValidationParameters = new TokenValidationParameters()
+    {
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidAudience = builder.Configuration["Jwt:Audience"] ?? "http://localhost:5000",
+        ValidIssuer = builder.Configuration["Jwt:Issuer"] ?? "http://localhost:5000",
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? "ByYM000OLlMQG6VVVp1OH7Xzyr7gHuw1qvUC5dcGt3SNM"))
+    };
+});
 
 // ✅ DÜZELTME: Services'leri DI container'a ekle
 // Sadece interface ile kaydet, concrete class'ı ayrıca kaydetmeye gerek yok
@@ -162,6 +228,35 @@ builder.Services.AddScoped<ExactSalesReports>(serviceProvider =>
         serviceProvider: serviceProvider
     );
 });
+
+
+builder.Services.AddScoped<ExactSalesReportsUltraOptimized>(serviceProvider =>
+{
+    // ✅ DÜZELTME: ISettingsService kullan (SettingsService yerine)
+    var settingsService = serviceProvider.GetRequiredService<ISettingsService>();
+    var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+    var tokenManager = serviceProvider.GetRequiredService<ITokenManager>();
+    var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+    var logger = loggerFactory.CreateLogger<ExactCustomerCrud>();
+
+
+    var exactSection = configuration.GetSection("ExactOnline");
+
+    return new ExactSalesReportsUltraOptimized(
+        clientId: exactSection["ClientId"] ?? throw new InvalidOperationException("ExactOnline:ClientId is missing"),
+        clientSecret: exactSection["ClientSecret"] ?? throw new InvalidOperationException("ExactOnline:ClientSecret is missing"),
+        redirectUri: exactSection["RedirectUri"] ?? throw new InvalidOperationException("ExactOnline:RedirectUri is missing"),
+        baseUrl: exactSection["BaseUrl"] ?? "https://start.exactonline.nl",
+        divisionCode: exactSection["DivisionCode"] ?? throw new InvalidOperationException("ExactOnline:DivisionCode is missing"),
+        tokenFile: exactSection["TokenFile"] ?? "token.json",
+        logger: logger,
+        settingsService: settingsService,
+        tokenManager: tokenManager,
+        serviceProvider: serviceProvider
+    );
+});
+
+
 builder.Services.AddScoped<CustomerReports>(serviceProvider =>
 {
     // ✅ DÜZELTME: ISettingsService kullan (SettingsService yerine)
@@ -274,12 +369,13 @@ builder.Services.AddSingleton<AppConfiguration>();
 // Thread-Safe Background Services
 builder.Services.AddHostedService<StockSyncBackgroundService>();        // Stok sync (günlük 09:30)
 //bu eklendi classification kontrolü içim
-builder.Services.AddHostedService<UpdateExactCustomerJob>();
-//bunlar artık yok
-//builder.Services.AddHostedService<NewProductCreationService>();
+//builder.Services.AddHostedService<UpdateExactCustomerJob>();
+//New product var ama ProductPriceAndTitleUpdateService bundan emin değilim açık şimdilik
+builder.Services.AddHostedService<NewProductCreationService>();
 //bunu stok ile birleştireceğim
 // builder.Services.AddHostedService<ProductPriceAndTitleUpdate>(); 
 builder.Services.AddScoped<ProductPriceAndTitleUpdateService>();
+builder.Services.AddSingleton<ITokenBlacklistService, TokenBlacklistService>();
 
 var app = builder.Build();
 
@@ -352,9 +448,27 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+
+
 // Configure the HTTP request pipeline
 app.UseRouting();
 app.UseCors("AllowAll");
+app.UseAuthentication(); // ✨ Authentication Middleware
+app.UseMiddleware<ShopifyProductApp.Middleware.TokenBlacklistMiddleware>(); // ✨ Token Blacklist Middleware
+app.UseAuthorization();  // ✨ Authorization Middleware
+
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+else
+{
+    // Production'da da Swagger görmek isterseniz burayı açabilirsiniz
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
 
 // OPTIONS isteklerini handle et
 app.Use(async (context, next) =>
