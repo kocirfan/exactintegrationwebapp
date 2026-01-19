@@ -192,6 +192,40 @@ namespace ShopifyProductApp.Controllers
                 // 2. Sipariş satırlarını hazırla
                 var salesOrderLines = new List<ExactOrderLine>();
 
+                // 🎯 Pickup indirimi için discount_application index'ini bul
+                // NOT: isPickup kontrolü kaldırıldı - discount_applications'dan direkt tespit edilir
+                int? pickupDiscountIndex = null;
+                double totalPickupDiscount = 0; // Sepet bazında toplanacak pickup indirimi (tutar)
+                double pickupDiscountPercentage = 0; // Pickup indirim yüzdesi (Exact'a gönderilecek)
+                bool hasPickupDiscount = false; // Pickup indirimi var mı?
+
+                if (shopifyOrder.DiscountApplications != null && shopifyOrder.DiscountApplications.Count > 0)
+                {
+                    _logger.LogInformation("📋 Discount Applications sayısı: {Count}", shopifyOrder.DiscountApplications.Count);
+
+                    for (int i = 0; i < shopifyOrder.DiscountApplications.Count; i++)
+                    {
+                        var discountApp = shopifyOrder.DiscountApplications[i];
+                        _logger.LogInformation("📋 DiscountApp[{Index}]: Title={Title}, Value={Value}, ValueType={ValueType}",
+                            i, discountApp.Title ?? "NULL", discountApp.Value ?? "NULL", discountApp.ValueType ?? "NULL");
+
+                        // Title içinde "pickup" geçiyorsa bu pickup indirimi
+                        if (!string.IsNullOrEmpty(discountApp.Title) &&
+                            discountApp.Title.ToLower().Contains("pickup"))
+                        {
+                            pickupDiscountIndex = i;
+                            hasPickupDiscount = true;
+                            _logger.LogInformation("🎯 PICKUP İNDİRİMİ BULUNDU: Index={Index}, Title={Title}, Value={Value} {ValueType}",
+                                i, discountApp.Title, discountApp.Value, discountApp.ValueType);
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("📋 Discount Applications BOŞ veya NULL");
+                }
+
                 foreach (var lineItem in shopifyOrder.LineItems)
                 {
                     var exactItem = await _exactService.GetOrCreateItemAsync(lineItem.Sku);
@@ -207,31 +241,51 @@ namespace ShopifyProductApp.Controllers
                         //  ORİJİNAL FİYAT (İndirim öncesi) - Shopify'dan "price"
                         double unitPrice = double.TryParse(lineItem.Price.Replace(".", ","), out var price) ? price : 0d;
 
-                        //  TOPLAM İNDİRİM - Shopify'dan "total_discount"
+                        //  TOPLAM İNDİRİM - Shopify'dan discount_allocations
+                        //  ⚠️ Pickup indirimi varsa: pickup indirimi hariç tutulacak (sepet bazında uygulanacak)
                         double totalDiscount = 0;
-                        if (lineItem.DiscountAllocations != null && lineItem.DiscountAllocations.Any())
+                        if (lineItem.DiscountAllocations != null && lineItem.DiscountAllocations.Count > 0)
                         {
+                            _logger.LogInformation("📋 Ürün: {Sku} - DiscountAllocations sayısı: {Count}",
+                                lineItem.Sku, lineItem.DiscountAllocations.Count);
+
                             foreach (var allocation in lineItem.DiscountAllocations)
                             {
                                 if (!string.IsNullOrEmpty(allocation.Amount))
                                 {
-                                    totalDiscount += double.TryParse(allocation.Amount.Replace(".", ","), out var amount) ? amount : 0d;
+                                    double allocationAmount = double.TryParse(allocation.Amount.Replace(".", ","), out var amount) ? amount : 0d;
+
+                                    _logger.LogInformation("   📋 Allocation: Amount={Amount}, Index={Index}, PickupIndex={PickupIndex}, HasPickup={HasPickup}",
+                                        allocationAmount, allocation.DiscountApplicationIndex,
+                                        pickupDiscountIndex?.ToString() ?? "NULL", hasPickupDiscount);
+
+                                    // Pickup indirimi ise sepet bazında topla, ürün indiriminden çıkar
+                                    // NOT: isPickup yerine hasPickupDiscount kullanılıyor
+                                    if (hasPickupDiscount && pickupDiscountIndex.HasValue &&
+                                        allocation.DiscountApplicationIndex == pickupDiscountIndex.Value)
+                                    {
+                                        totalPickupDiscount += allocationAmount;
+                                        _logger.LogInformation("   🚫 PICKUP İNDİRİMİ ÇIKARILDI: {Amount}€ (SKU: {Sku})",
+                                            allocationAmount, lineItem.Sku);
+                                    }
+                                    else
+                                    {
+                                        // Normal ürün indirimi - ürün bazında uygula
+                                        totalDiscount += allocationAmount;
+                                        _logger.LogInformation("   ✅ ÜRÜN İNDİRİMİ EKLENDİ: {Amount}€ (SKU: {Sku})",
+                                            allocationAmount, lineItem.Sku);
+                                    }
                                 }
                             }
-                            _logger.LogInformation($"✅ Discount allocations'dan indirim alındı: {totalDiscount}€");
+                            _logger.LogInformation("📊 SONUÇ - Ürün: {Sku}, Ürün İndirimi: {TotalDiscount}€, Pickup İndirimi (sepet): {PickupDiscount}€",
+                                lineItem.Sku, totalDiscount, totalPickupDiscount);
                         }
-
                         // Fallback: total_discount
                         else if (!string.IsNullOrEmpty(lineItem.TotalDiscount))
                         {
                             totalDiscount = double.TryParse(lineItem.TotalDiscount.Replace(".", ","), out var td) ? td : 0d;
-                            _logger.LogInformation($"⚠️ Total_discount'dan indirim alındı: {totalDiscount}€");
+                            _logger.LogInformation("⚠️ Total_discount'dan indirim alındı: {TotalDiscount}€", totalDiscount);
                         }
-                        // // double discountPerUnit = lineItem.Quantity > 0 ? totalDiscount / lineItem.Quantity : 0;
-                        // if (!string.IsNullOrEmpty(lineItem.TotalDiscount))
-                        // {
-                        //     totalDiscount = double.TryParse(lineItem.TotalDiscount.Replace(".", ","), out var td) ? td : 0d;
-                        // }
 
                         //  BİRİM BAŞINA İNDİRİM
                         double discountPerUnit = lineItem.Quantity > 0 ? totalDiscount / lineItem.Quantity : 0;
@@ -239,7 +293,7 @@ namespace ShopifyProductApp.Controllers
                         //  İNDİRİMLİ FİYAT (NetPrice)
                         double unitPriceWithDiscount = unitPrice - discountPerUnit;
 
-                        //  İNDİRİM YÜZDESİ (Exact için) - 
+                        //  İNDİRİM YÜZDESİ (Exact için) -
                         double discountPercentage = unitPrice > 0
                             ? ((unitPrice - unitPriceWithDiscount) / unitPrice) * 100
                             : 0;
@@ -251,18 +305,39 @@ namespace ShopifyProductApp.Controllers
                             Description = lineItem.Title,
                             Quantity = lineItem.Quantity,
                             UnitPrice = unitPrice,                      // 299.00 (Orijinal)
-                            NetPrice = unitPriceWithDiscount,           // 179.40 (İndirimli)
-                            Discount = discountPercentage,              // 40.00 (YÜZDE!)
-                            VATPercentage = finalVATPercentage,            //VATPercentage = vatPercentage,
+                            NetPrice = unitPriceWithDiscount,           // İndirimli (pickup hariç)
+                            Discount = discountPercentage,              // YÜZDE (pickup hariç)
+                            VATPercentage = finalVATPercentage,
                             UnitCode = exactItem.Unit?.Trim() ?? "pc",
-                            DeliveryDate = defaultDeliveryDate,         // Pickup date veya varsayılan
+                            DeliveryDate = defaultDeliveryDate,
                             Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
                         });
                     }
                     else
                     {
-                        _logger.LogWarning($"Ürün bulunamadı: {lineItem.Title} (SKU: {lineItem.Sku})");
+                        _logger.LogWarning("Ürün bulunamadı: {Title} (SKU: {Sku})", lineItem.Title, lineItem.Sku);
                     }
+                }
+
+                // 🎁 Pickup indirimi varsa - yüzdeyi doğru hesapla
+                // Pickup indirimi, ürün indirimleri uygulandıktan SONRA kalan tutara uygulanır
+                // Örnek: 686.70€ (indirimli toplam) * %2 = 13.73€
+                // NOT: isPickup yerine hasPickupDiscount kullanılıyor
+                if (hasPickupDiscount && totalPickupDiscount > 0)
+                {
+                    // current_subtotal_price = pickup dahil son fiyat (672.97€)
+                    // Pickup indirim öncesi = current_subtotal_price + totalPickupDiscount (686.70€)
+                    double currentSubtotalForPickup = double.TryParse(shopifyOrder.current_subtotal_price?.Replace(".", ",") ?? "0", out var cstp) ? cstp : 0;
+                    double subtotalBeforePickup = currentSubtotalForPickup + totalPickupDiscount;
+
+                    if (subtotalBeforePickup > 0)
+                    {
+                        // Exact ondalık bekliyor: %2 = 0.02
+                        pickupDiscountPercentage = totalPickupDiscount / subtotalBeforePickup;
+                    }
+
+                    _logger.LogInformation("🎁 PICKUP İNDİRİMİ HESAPLANDI: {TotalPickupDiscount}€ / {SubtotalBeforePickup}€ = {Percentage} (Exact için ondalık)",
+                        totalPickupDiscount, subtotalBeforePickup, pickupDiscountPercentage);
                 }
 
                 if (!salesOrderLines.Any())
@@ -573,6 +648,13 @@ namespace ShopifyProductApp.Controllers
                     }
                 }
 
+                // 🎁 Pickup indirimi yüzdesini logla
+                if (isPickup && pickupDiscountPercentage > 0)
+                {
+                    _logger.LogInformation("🎁 Pickup indirimi Exact'a gönderilecek: {PickupDiscountPercentage}% (Tutar: {TotalPickupDiscount}€)",
+                        pickupDiscountPercentage, totalPickupDiscount);
+                }
+
                 var exactOrder = new ExactOrder
                 {
                     OrderedBy = customerId.Value,
@@ -593,9 +675,18 @@ namespace ShopifyProductApp.Controllers
                     AmountDC = currentSubtotalPrice - currentTotalTax,  // KDV hariç
                     AmountFC = currentSubtotalPrice - currentTotalTax,  // KDV hariç
                     AmountFCExclVat = currentSubtotalPrice - currentTotalTax,
-                    AmountDiscount = 0,  // Satır bazında gönderildiği için 0
-                    AmountDiscountExclVat = 0,  // Satır bazında gönderildiği için 0
+
+                    // 🎁 Pickup indirimi - HER İKİ ALANI DA GÖNDER
+                    // AmountDiscount = 8.14€ (KDV dahil: 6.73 * 1.21)
+                    // AmountDiscountExclVat = 6.73€ (KDV hariç)
+                    AmountDiscount = hasPickupDiscount ? (totalPickupDiscount * 1.21) : 0,
+                    AmountDiscountExclVat = hasPickupDiscount ? totalPickupDiscount : 0,
                 };
+
+                _logger.LogInformation("📤 EXACT'A GÖNDERİLECEK: AmountDiscount={AmountDiscount}€ (KDV dahil), AmountDiscountExclVat={AmountDiscountExclVat}€ (KDV hariç), hasPickupDiscount={HasPickup}",
+                    hasPickupDiscount ? (totalPickupDiscount * 1.21) : 0,
+                    hasPickupDiscount ? totalPickupDiscount : 0,
+                    hasPickupDiscount);
 
                 _logger.LogInformation($"Sipariş hazırlandı - Satır: {salesOrderLines.Count}");
 

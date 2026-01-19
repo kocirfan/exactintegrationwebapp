@@ -2541,7 +2541,7 @@ public class CustomerReports
                 var url = $"{_baseUrl}/api/v1/{_divisionCode}/salesorder/SalesOrders" +
                          $"?{filter}" +
                          $"&$top={pageSize}" +
-                         $"&$skip={skip}";
+                         $"&$skip={skip}&Status eq 21";
 
                 _logger.LogDebug($"📄 Sayfa {pageNumber} çekiliyor... (Skip: {skip}, Toplam: {allSalesOrders.Count})");
 
@@ -2680,7 +2680,7 @@ public class CustomerReports
                 var url = $"{_baseUrl}/api/v1/{_divisionCode}/salesorder/SalesOrders" +
                          $"?{filter}" +
                          $"&$top={pageSize}" +
-                         $"&$skip={skip}";
+                         $"&$skip={skip}&Status eq 21";
 
                 _logger.LogDebug($"📄 Sayfa {pageNumber} çekiliyor... (Skip: {skip}, Toplam: {allSalesOrders.Count})");
 

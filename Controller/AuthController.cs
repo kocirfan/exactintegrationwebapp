@@ -87,7 +87,10 @@ namespace ShopifyProductApp.Controller
             };
             var result = await _userManager.CreateAsync(user, model.Password);
             if (!result.Succeeded)
-                return StatusCode(StatusCodes.Status500InternalServerError, new { Status = "Error", Message = "User creation failed! Please check user details and try again." });
+            {
+                var errors = string.Join(", ", result.Errors.Select(e => e.Description));
+                return StatusCode(StatusCodes.Status500InternalServerError, new { Status = "Error", Message = $"User creation failed: {errors}" });
+            }
 
             return Ok(new { Status = "Success", Message = "User created successfully!" });
         }

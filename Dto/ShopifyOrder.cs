@@ -84,6 +84,9 @@ public class ShopifyOrder
 
     [JsonPropertyName("note_attributes")]
     public List<ShopifyNoteAttribute> NoteAttributes { get; set; } = new();
+
+    [JsonPropertyName("discount_applications")]
+    public List<ShopifyDiscountApplication> DiscountApplications { get; set; } = new();
 }
 
 public class ShopifyLineItem
@@ -202,4 +205,28 @@ public class ShopifyNoteAttribute
 
     [JsonPropertyName("value")]
     public string Value { get; set; }
+}
+
+public class ShopifyDiscountApplication
+{
+    [JsonPropertyName("target_type")]
+    public string TargetType { get; set; }
+
+    [JsonPropertyName("type")]
+    public string Type { get; set; }
+
+    [JsonPropertyName("value")]
+    public string Value { get; set; }
+
+    [JsonPropertyName("value_type")]
+    public string ValueType { get; set; }
+
+    [JsonPropertyName("allocation_method")]
+    public string AllocationMethod { get; set; }
+
+    [JsonPropertyName("target_selection")]
+    public string TargetSelection { get; set; }
+
+    [JsonPropertyName("title")]
+    public string Title { get; set; }
 }

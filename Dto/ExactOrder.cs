@@ -6,6 +6,7 @@ public class ExactOrder
 {
     public double AmountDC { get; set; }
     public double AmountDiscount { get; set; }
+    public double Discount { get; set; }
     public double AmountDiscountExclVat { get; set; }
     public double AmountFC { get; set; }
     public double AmountFCExclVat { get; set; }

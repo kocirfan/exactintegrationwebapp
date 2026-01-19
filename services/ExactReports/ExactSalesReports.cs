@@ -212,7 +212,7 @@ public class ExactSalesReports
             var url = $"{_baseUrl}/api/v1/{_divisionCode}/salesorder/SalesOrders" +
                       $"?$filter={filter}" +
                       $"&$expand=SalesOrderLines" +
-                      $"&$top=250";
+                      $"&$top=250&Status eq 21";
 
             _logger.LogInformation($"🔗 API Call: {url}");
 
@@ -761,7 +761,7 @@ public class ExactSalesReports
             var url = $"{_baseUrl}/api/v1/{_divisionCode}/salesorder/SalesOrders" +
                         $"?$filter={filter}" +
                         $"&$top=250" +
-                        $"&$skip=0";
+                        $"&$skip=0&Status eq 21";
 
             _logger.LogInformation($"📡 API URL: {url}");
 
