@@ -552,11 +552,7 @@ public class ExactAddressCrud
         try
         {
             var allAddresses = new List<ExactAddress>();
-            var errorAddresses = new List<string>(); // Hata alan adresler
-
-            int skip = 0;
-            int top = 60;
-            bool hasMore = true;
+            var errorAddresses = new List<string>();
 
             var jsonOptions = new JsonSerializerOptions
             {
@@ -569,147 +565,109 @@ public class ExactAddressCrud
                 Converters = { new JsonStringEnumConverter() }
             };
 
-            // JSON serializer options özelleştirme
             jsonOptions.Converters.Add(new JsonStringEnumConverter());
 
-            // Address tipi için custom converter ekleyebiliriz
-            // jsonOptions.Converters.Add(new NullableDateConverter());
-            // jsonOptions.Converters.Add(new NullableGuidConverter());
+            // Sadece ilk sayfayı çek ($top=10) - tüm adresleri çekmeye gerek yok
+            var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Addresses?$filter=Account eq guid'{customerId}' and Type eq 3&$top=10";
 
-            while (hasMore)
+            _logger.LogInformation($"🔍 Fatura adresi sorgusu (ilk sayfa): {url}");
+
+            var response = await client.GetAsync(url);
+            if (!response.IsSuccessStatusCode)
             {
-                // Müşteriye ait tüm adresleri getir
-                var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Addresses?$filter=Account eq guid'{customerId}' and Type eq 3";
+                _logger.LogError($"API hatası: {response.StatusCode}");
+                var errorContent = await response.Content.ReadAsStringAsync();
+                _logger.LogError($"Hata detayı: {errorContent}");
+                return new List<ExactAddress>();
+            }
 
-                Console.WriteLine($"🔍 Adres sorgusu: {url}");
+            var content = await response.Content.ReadAsStringAsync();
+            content = PreProcessAddressJson(content);
 
-                var response = await client.GetAsync(url);
-                if (!response.IsSuccessStatusCode)
+            using var doc = JsonDocument.Parse(content);
+
+            if (!doc.RootElement.TryGetProperty("d", out var dElement))
+            {
+                _logger.LogError("'d' property bulunamadı");
+                return new List<ExactAddress>();
+            }
+
+            JsonElement resultsArray;
+
+            if (dElement.ValueKind == JsonValueKind.Array)
+            {
+                resultsArray = dElement;
+            }
+            else if (dElement.TryGetProperty("results", out var resultsProperty))
+            {
+                resultsArray = resultsProperty;
+            }
+            else
+            {
+                _logger.LogError("Results bulunamadı");
+                return new List<ExactAddress>();
+            }
+
+            int count = 0;
+            int errorCount = 0;
+            int totalFromApi = resultsArray.EnumerateArray().Count();
+
+            if (totalFromApi == 0)
+            {
+                _logger.LogInformation($"Müşteri ({customerId}) için fatura adresi bulunamadı");
+                return new List<ExactAddress>();
+            }
+
+            foreach (var addressElement in resultsArray.EnumerateArray())
+            {
+                ExactAddress address = null;
+                var addressJson = addressElement.GetRawText();
+
+                try
                 {
-                    _logger.LogError($"API hatası: {response.StatusCode}");
-                    var errorContent = await response.Content.ReadAsStringAsync();
-                    _logger.LogError($"Hata detayı: {errorContent}");
-                    break;
+                    addressJson = PreProcessAddressJson(addressJson);
+                    address = JsonSerializer.Deserialize<ExactAddress>(addressJson, jsonOptions);
+
+                    if (address != null)
+                    {
+                        allAddresses.Add(address);
+                        count++;
+                        _logger.LogDebug($"Adres alındı: {address.Id}, Tür: {address.TypeDescription}, Şehir: {address.City}");
+                    }
                 }
-
-                var content = await response.Content.ReadAsStringAsync();
-
-                // JSON'u önce temizle
-                content = PreProcessAddressJson(content);
-
-                using var doc = JsonDocument.Parse(content);
-
-                // "d" property'sini al
-                if (!doc.RootElement.TryGetProperty("d", out var dElement))
+                catch (JsonException jsonEx)
                 {
-                    _logger.LogError("'d' property bulunamadı");
-                    break;
-                }
-
-                JsonElement resultsArray;
-
-                // "d" direkt array mi yoksa object içinde "results" mi?
-                if (dElement.ValueKind == JsonValueKind.Array)
-                {
-                    resultsArray = dElement;
-                }
-                else if (dElement.TryGetProperty("results", out var resultsProperty))
-                {
-                    resultsArray = resultsProperty;
-                }
-                else
-                {
-                    _logger.LogError("Results bulunamadı");
-                    break;
-                }
-
-                int count = 0;
-                int errorCount = 0;
-
-                // API'den gelen gerçek kayıt sayısını al
-                int totalFromApi = resultsArray.EnumerateArray().Count();
-
-                if (totalFromApi == 0)
-                {
-                    _logger.LogInformation($"Müşteri ({customerId}) için adres bulunamadı");
-                    break;
-                }
-
-                foreach (var addressElement in resultsArray.EnumerateArray())
-                {
-                    ExactAddress address = null;
-                    var addressJson = addressElement.GetRawText();
-
+                    errorCount++;
                     try
                     {
-                        // Her adres için de temizlik yap
-                        addressJson = PreProcessAddressJson(addressJson);
-
-                        address = JsonSerializer.Deserialize<ExactAddress>(addressJson, jsonOptions);
-
-                        if (address != null)
+                        var errorDoc = JsonDocument.Parse(addressJson);
+                        if (errorDoc.RootElement.TryGetProperty("ID", out var idProp))
                         {
-                            allAddresses.Add(address);
-                            count++;
-                            // Debug için adres bilgilerini logla
-                            _logger.LogDebug($"Adres alındı: {address.Id}, Tür: {address.TypeDescription}, Şehir: {address.City}");
+                            var id = idProp.GetString();
+                            if (!string.IsNullOrWhiteSpace(id))
+                                errorAddresses.Add(id);
+                            _logger.LogWarning($"JSON parse hatası - Adres ID: {id}");
                         }
                     }
-                    catch (JsonException jsonEx)
-                    {
-                        errorCount++;
-
-                        // Deserialize hatası sırasında ID'yi çıkar
-                        try
-                        {
-                            var errorDoc = JsonDocument.Parse(addressJson);
-                            if (errorDoc.RootElement.TryGetProperty("ID", out var idProp))
-                            {
-                                var id = idProp.GetString();
-                                if (!string.IsNullOrWhiteSpace(id))
-                                    errorAddresses.Add(id);
-                                _logger.LogWarning($"JSON parse hatası - Adres ID: {id}");
-                            }
-                        }
-                        catch { }
-
-                        _logger.LogWarning($"JSON parse hatası ({errorCount}): {jsonEx.Message}");
-                    }
-                    catch (Exception ex)
-                    {
-                        errorCount++;
-                        _logger.LogError($"Genel hata: {ex.Message}");
-                    }
+                    catch { }
+                    _logger.LogWarning($"JSON parse hatası ({errorCount}): {jsonEx.Message}");
                 }
-
-                if (errorCount > 0)
+                catch (Exception ex)
                 {
-                    _logger.LogWarning($"{count} başarılı, {errorCount} hatalı adres kaydı (API'den {totalFromApi} kayıt geldi)");
-                }
-                else
-                {
-                    _logger.LogInformation($"{count} adres başarıyla alındı");
-                }
-
-                // API'den gelen kayıt sayısını kontrol et
-                if (totalFromApi < top)
-                {
-                    hasMore = false;
-                    _logger.LogInformation("Son sayfaya ulaşıldı");
-                }
-                else
-                {
-                    skip += top;
-                    await Task.Delay(500); // Rate limiting için bekle
+                    errorCount++;
+                    _logger.LogError($"Genel hata: {ex.Message}");
                 }
             }
 
-            if (errorAddresses.Count > 0)
+            if (errorCount > 0)
             {
-                _logger.LogWarning($"{errorAddresses.Count} adres parse hatası yaşadı");
+                _logger.LogWarning($"{count} başarılı, {errorCount} hatalı adres kaydı (API'den {totalFromApi} kayıt geldi)");
+            }
+            else
+            {
+                _logger.LogInformation($"{count} fatura adresi başarıyla alındı (ilk sayfa)");
             }
 
-            // Ana adresi ilk sıraya al
             var sortedAddresses = allAddresses
                 .OrderByDescending(a => a.IsMain)
                 .ThenBy(a => a.Type)
@@ -719,7 +677,7 @@ public class ExactAddressCrud
         }
         catch (Exception ex)
         {
-            _logger.LogError($"GetCustomerAddresses metodu hatası: {ex.Message}");
+            _logger.LogError($"GetCustomerBillingAddresses metodu hatası: {ex.Message}");
             return new List<ExactAddress>();
         }
     }
@@ -744,11 +702,7 @@ public class ExactAddressCrud
         try
         {
             var allAddresses = new List<ExactAddress>();
-            var errorAddresses = new List<string>(); // Hata alan adresler
-
-            int skip = 0;
-            int top = 60;
-            bool hasMore = true;
+            var errorAddresses = new List<string>();
 
             var jsonOptions = new JsonSerializerOptions
             {
@@ -761,147 +715,109 @@ public class ExactAddressCrud
                 Converters = { new JsonStringEnumConverter() }
             };
 
-            // JSON serializer options özelleştirme
             jsonOptions.Converters.Add(new JsonStringEnumConverter());
 
-            // Address tipi için custom converter ekleyebiliriz
-            // jsonOptions.Converters.Add(new NullableDateConverter());
-            // jsonOptions.Converters.Add(new NullableGuidConverter());
+            // Sadece ilk sayfayı çek ($top=10) - tüm adresleri çekmeye gerek yok
+            var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Addresses?$filter=Account eq guid'{customerId}' and Type eq 4&$top=10";
 
-            while (hasMore)
+            _logger.LogInformation($"🔍 Teslimat adresi sorgusu (ilk sayfa): {url}");
+
+            var response = await client.GetAsync(url);
+            if (!response.IsSuccessStatusCode)
             {
-                // Müşteriye ait tüm adresleri getir
-                var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Addresses?$filter=Account eq guid'{customerId}' and Type eq 4";
+                _logger.LogError($"API hatası: {response.StatusCode}");
+                var errorContent = await response.Content.ReadAsStringAsync();
+                _logger.LogError($"Hata detayı: {errorContent}");
+                return new List<ExactAddress>();
+            }
 
-                Console.WriteLine($"🔍 Adres sorgusu: {url}");
+            var content = await response.Content.ReadAsStringAsync();
+            content = PreProcessAddressJson(content);
 
-                var response = await client.GetAsync(url);
-                if (!response.IsSuccessStatusCode)
+            using var doc = JsonDocument.Parse(content);
+
+            if (!doc.RootElement.TryGetProperty("d", out var dElement))
+            {
+                _logger.LogError("'d' property bulunamadı");
+                return new List<ExactAddress>();
+            }
+
+            JsonElement resultsArray;
+
+            if (dElement.ValueKind == JsonValueKind.Array)
+            {
+                resultsArray = dElement;
+            }
+            else if (dElement.TryGetProperty("results", out var resultsProperty))
+            {
+                resultsArray = resultsProperty;
+            }
+            else
+            {
+                _logger.LogError("Results bulunamadı");
+                return new List<ExactAddress>();
+            }
+
+            int count = 0;
+            int errorCount = 0;
+            int totalFromApi = resultsArray.EnumerateArray().Count();
+
+            if (totalFromApi == 0)
+            {
+                _logger.LogInformation($"Müşteri ({customerId}) için teslimat adresi bulunamadı");
+                return new List<ExactAddress>();
+            }
+
+            foreach (var addressElement in resultsArray.EnumerateArray())
+            {
+                ExactAddress address = null;
+                var addressJson = addressElement.GetRawText();
+
+                try
                 {
-                    _logger.LogError($"API hatası: {response.StatusCode}");
-                    var errorContent = await response.Content.ReadAsStringAsync();
-                    _logger.LogError($"Hata detayı: {errorContent}");
-                    break;
+                    addressJson = PreProcessAddressJson(addressJson);
+                    address = JsonSerializer.Deserialize<ExactAddress>(addressJson, jsonOptions);
+
+                    if (address != null)
+                    {
+                        allAddresses.Add(address);
+                        count++;
+                        _logger.LogDebug($"Adres alındı: {address.Id}, Tür: {address.TypeDescription}, Şehir: {address.City}");
+                    }
                 }
-
-                var content = await response.Content.ReadAsStringAsync();
-
-                // JSON'u önce temizle
-                content = PreProcessAddressJson(content);
-
-                using var doc = JsonDocument.Parse(content);
-
-                // "d" property'sini al
-                if (!doc.RootElement.TryGetProperty("d", out var dElement))
+                catch (JsonException jsonEx)
                 {
-                    _logger.LogError("'d' property bulunamadı");
-                    break;
-                }
-
-                JsonElement resultsArray;
-
-                // "d" direkt array mi yoksa object içinde "results" mi?
-                if (dElement.ValueKind == JsonValueKind.Array)
-                {
-                    resultsArray = dElement;
-                }
-                else if (dElement.TryGetProperty("results", out var resultsProperty))
-                {
-                    resultsArray = resultsProperty;
-                }
-                else
-                {
-                    _logger.LogError("Results bulunamadı");
-                    break;
-                }
-
-                int count = 0;
-                int errorCount = 0;
-
-                // API'den gelen gerçek kayıt sayısını al
-                int totalFromApi = resultsArray.EnumerateArray().Count();
-
-                if (totalFromApi == 0)
-                {
-                    _logger.LogInformation($"Müşteri ({customerId}) için adres bulunamadı");
-                    break;
-                }
-
-                foreach (var addressElement in resultsArray.EnumerateArray())
-                {
-                    ExactAddress address = null;
-                    var addressJson = addressElement.GetRawText();
-
+                    errorCount++;
                     try
                     {
-                        // Her adres için de temizlik yap
-                        addressJson = PreProcessAddressJson(addressJson);
-
-                        address = JsonSerializer.Deserialize<ExactAddress>(addressJson, jsonOptions);
-
-                        if (address != null)
+                        var errorDoc = JsonDocument.Parse(addressJson);
+                        if (errorDoc.RootElement.TryGetProperty("ID", out var idProp))
                         {
-                            allAddresses.Add(address);
-                            count++;
-                            // Debug için adres bilgilerini logla
-                            _logger.LogDebug($"Adres alındı: {address.Id}, Tür: {address.TypeDescription}, Şehir: {address.City}");
+                            var id = idProp.GetString();
+                            if (!string.IsNullOrWhiteSpace(id))
+                                errorAddresses.Add(id);
+                            _logger.LogWarning($"JSON parse hatası - Adres ID: {id}");
                         }
                     }
-                    catch (JsonException jsonEx)
-                    {
-                        errorCount++;
-
-                        // Deserialize hatası sırasında ID'yi çıkar
-                        try
-                        {
-                            var errorDoc = JsonDocument.Parse(addressJson);
-                            if (errorDoc.RootElement.TryGetProperty("ID", out var idProp))
-                            {
-                                var id = idProp.GetString();
-                                if (!string.IsNullOrWhiteSpace(id))
-                                    errorAddresses.Add(id);
-                                _logger.LogWarning($"JSON parse hatası - Adres ID: {id}");
-                            }
-                        }
-                        catch { }
-
-                        _logger.LogWarning($"JSON parse hatası ({errorCount}): {jsonEx.Message}");
-                    }
-                    catch (Exception ex)
-                    {
-                        errorCount++;
-                        _logger.LogError($"Genel hata: {ex.Message}");
-                    }
+                    catch { }
+                    _logger.LogWarning($"JSON parse hatası ({errorCount}): {jsonEx.Message}");
                 }
-
-                if (errorCount > 0)
+                catch (Exception ex)
                 {
-                    _logger.LogWarning($"{count} başarılı, {errorCount} hatalı adres kaydı (API'den {totalFromApi} kayıt geldi)");
-                }
-                else
-                {
-                    _logger.LogInformation($"{count} adres başarıyla alındı");
-                }
-
-                // API'den gelen kayıt sayısını kontrol et
-                if (totalFromApi < top)
-                {
-                    hasMore = false;
-                    _logger.LogInformation("Son sayfaya ulaşıldı");
-                }
-                else
-                {
-                    skip += top;
-                    await Task.Delay(500); // Rate limiting için bekle
+                    errorCount++;
+                    _logger.LogError($"Genel hata: {ex.Message}");
                 }
             }
 
-            if (errorAddresses.Count > 0)
+            if (errorCount > 0)
             {
-                _logger.LogWarning($"{errorAddresses.Count} adres parse hatası yaşadı");
+                _logger.LogWarning($"{count} başarılı, {errorCount} hatalı adres kaydı (API'den {totalFromApi} kayıt geldi)");
+            }
+            else
+            {
+                _logger.LogInformation($"{count} teslimat adresi başarıyla alındı (ilk sayfa)");
             }
 
-            // Ana adresi ilk sıraya al
             var sortedAddresses = allAddresses
                 .OrderByDescending(a => a.IsMain)
                 .ThenBy(a => a.Type)
@@ -911,7 +827,7 @@ public class ExactAddressCrud
         }
         catch (Exception ex)
         {
-            _logger.LogError($"GetCustomerAddresses metodu hatası: {ex.Message}");
+            _logger.LogError($"GetCustomerDeliveryAddresses metodu hatası: {ex.Message}");
             return new List<ExactAddress>();
         }
     }

@@ -210,8 +210,65 @@ namespace ShopifyProductApp.Controllers
                     {
                         _logger.LogInformation("🆕 Yeni müşteri oluşturuldu: {Name} ({Code})", customerData.Name, customerData.Code);
                         var logFile = _webhookLogPath;
-                        var test = await shopifyCustomerService.CreateCustomerEmailAsync(customerData, logFile);
-                        // Burada Shopify'a customer ekleyebilirsiniz
+
+                        // customerData tüm verilerini txt log dosyasına yaz
+                        try
+                        {
+                            var customerLogDir = "Data";
+                            if (!Directory.Exists(customerLogDir))
+                                Directory.CreateDirectory(customerLogDir);
+
+                            var na = "N/A";
+                            var logLine = $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}] YENİ MÜŞTERİ OLUŞTURMA\n" +
+                                $"  ID: {customerData.ID}\n" +
+                                $"  Code: {customerData.Code ?? na}\n" +
+                                $"  Name: {customerData.Name ?? na}\n" +
+                                $"  Email: {customerData.Email ?? na}\n" +
+                                $"  Phone: {customerData.Phone ?? na}\n" +
+                                $"  PhoneExtension: {customerData.PhoneExtension ?? na}\n" +
+                                $"  Type: {customerData.Type ?? na}\n" +
+                                $"  Status: {customerData.Status ?? na}\n" +
+                                $"  Division: {customerData.Division}\n" +
+                                $"  AddressLine1: {customerData.AddressLine1 ?? na}\n" +
+                                $"  AddressLine2: {customerData.AddressLine2 ?? na}\n" +
+                                $"  AddressLine3: {customerData.AddressLine3 ?? na}\n" +
+                                $"  Postcode: {customerData.Postcode ?? na}\n" +
+                                $"  City: {customerData.City ?? na}\n" +
+                                $"  State: {customerData.State ?? na}\n" +
+                                $"  StateName: {customerData.StateName ?? na}\n" +
+                                $"  Country: {customerData.Country ?? na}\n" +
+                                $"  CountryName: {customerData.CountryName ?? na}\n" +
+                                $"  VATNumber: {customerData.VATNumber ?? na}\n" +
+                                $"  ClassificationDescription: {customerData.ClassificationDescription ?? na}\n" +
+                                $"  Classification1: {customerData.Classification1?.ToString() ?? na}\n" +
+                                $"  Created: {customerData.Created?.ToString("o") ?? na}\n" +
+                                $"  Modified: {customerData.Modified?.ToString("o") ?? na}\n" +
+                                $"  StartDate: {customerData.StartDate?.ToString("o") ?? na}\n" +
+                                $"  EndDate: {customerData.EndDate?.ToString("o") ?? na}\n" +
+                                $"  ControlledDate: {customerData.ControlledDate?.ToString("o") ?? na}\n" +
+                                $"  --- FULL JSON ---\n";
+                            var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
+                            logLine += $"  {JsonSerializer.Serialize(customerData, jsonOptions)}\n" +
+                                $"========================================\n\n";
+
+                            await System.IO.File.AppendAllTextAsync("Data/new_customer_log.txt", logLine);
+                            _logger.LogInformation("📝 Yeni müşteri verisi loglandı: {Code} - {Name}", customerData.Code, customerData.Name);
+                        }
+                        catch (Exception logEx)
+                        {
+                            _logger.LogError(logEx, "Customer log dosyasına yazılırken hata: {Error}", logEx.Message);
+                        }
+
+                        // Sadece Status "C" olan müşteriler Shopify'a gönderilecek
+                        if (customerData.Status == "C")
+                        {
+                            var test = await shopifyCustomerService.CreateCustomerEmailAsync(customerData, logFile);
+                        }
+                        else
+                        {
+                            _logger.LogInformation("⏭️ Müşteri Status={Status}, 'C' değil - Shopify'a gönderilmedi: {Name} ({Code})",
+                                customerData.Status, customerData.Name, customerData.Code);
+                        }
 
                     }
                     else if (action == "Update")
@@ -570,6 +627,7 @@ namespace ShopifyProductApp.Controllers
                 var description = itemData.TryGetProperty("Description", out var descEl) ? descEl.GetString() : null;
                 var price = itemData.TryGetProperty("StandardSalesPrice", out var priceEl) ? priceEl.GetDecimal() : 0m;
                 var isWebshopItem = itemData.TryGetProperty("IsWebshopItem", out var webshopEl) ? webshopEl.GetDecimal() : 0m;
+                var productId = itemData.TryGetProperty("ID", out var idEl) ? idEl.GetGuid() : Guid.Empty;
 
                 // Tarih alanlarını parse et
                 var createdDate = ParseMicrosoftJsonDate(itemData, "Created");
@@ -607,9 +665,20 @@ namespace ShopifyProductApp.Controllers
                     var shopifyService = scope.ServiceProvider.GetRequiredService<ShopifyService>();
                     if (action == "Update")
                     {
-                        _logger.LogInformation("🛒 Shopify güncelleme başlatılıyor: {Code}", code);
-                        await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(code, description, price, _updateLogFile);
-                        await shopifyService.ActiveOrPassif(code, isWebshopItem);
+                        bool isBundle = await _exactService.GetItemExtraFieldAsync(productId.ToString());
+                        if(isBundle)
+                        {
+                           _logger.LogInformation("🛒 Shopify sadece isim ve fiyat: {Code}", code);
+                            await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(code, description, price, _updateLogFile);
+                        }
+                        else
+                        {
+                             _logger.LogInformation("🛒 Shopify her ikiside güncellenilecek: {Code}", code);
+                            await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(code, description, price, _updateLogFile);
+                            await shopifyService.ActiveOrPassif(code, isWebshopItem);
+                        }
+                        
+                        
                     }
                     else if (action == "Create")
                     {

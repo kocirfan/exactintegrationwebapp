@@ -2605,20 +2605,98 @@ public class ExactService
                         var testResponse = await client.GetAsync(testUrl);
                         var testContent = await testResponse.Content.ReadAsStringAsync();
                         Console.WriteLine($"🔍 Müşteri Detayları: {testContent}");
-                        Console.WriteLine($"✅ Mevcut müşteri bulundu: {customerId}");
+
+                        // Sadece Status "C" olan müşteriler kabul edilecek
+                        var statusValue = existingCustomer.TryGetProperty("Status", out var statusProp) ? statusProp.GetString() : null;
+                        if (statusValue != null && statusValue != "C")
+                        {
+                            Console.WriteLine($"⏭️ Mevcut müşteri Status={statusValue}, 'C' değil - atlanıyor: {customerId}");
+                            _logger.LogInformation("Mevcut müşteri Status={Status}, 'C' değil - Exact'a yazılmadı: {Email}", statusValue, email);
+                            return null;
+                        }
+
+                        Console.WriteLine($"✅ Mevcut müşteri bulundu (Status=C): {customerId}");
                         return customerId;
                     }
                 }
             }
 
-            // Müşteri bulunamadı
-            Console.WriteLine($"❌ Müşteri bulunamadı: {email}");
-            _logger.LogWarning($"ExactOnline'da müşteri bulunamadı: {email}");
+            // Müşteri bulunamadı - Yeni müşteri oluştur (sadece Status "C" olarak)
+            Console.WriteLine($"⚠️ Müşteri bulunamadı: {email} - Yeni müşteri (Status=C) oluşturuluyor...");
+
+            // Müşteri adını oluştur
+            var customerName = $"{customer.FirstName} {customer.LastName}".Trim();
+            if (string.IsNullOrEmpty(customerName))
+            {
+                customerName = customer.Email;
+            }
+
+            // Yeni müşteri verisi oluştur
+            var newCustomerData = new Dictionary<string, object>
+            {
+                { "Name", customerName },
+                { "Email", customer.Email ?? "" },
+                { "Status", "C" } // C = Customer
+            };
+
+            // Adres bilgilerini ekle (varsa)
+            if (customer.DefaultAddress != null)
+            {
+                if (!string.IsNullOrEmpty(customer.DefaultAddress.Address1))
+                    newCustomerData["AddressLine1"] = customer.DefaultAddress.Address1;
+
+                if (!string.IsNullOrEmpty(customer.DefaultAddress.Address2))
+                    newCustomerData["AddressLine2"] = customer.DefaultAddress.Address2;
+
+                if (!string.IsNullOrEmpty(customer.DefaultAddress.City))
+                    newCustomerData["City"] = customer.DefaultAddress.City;
+
+                if (!string.IsNullOrEmpty(customer.DefaultAddress.Zip))
+                    newCustomerData["Postcode"] = customer.DefaultAddress.Zip;
+
+                if (!string.IsNullOrEmpty(customer.DefaultAddress.CountryCode))
+                    newCustomerData["Country"] = customer.DefaultAddress.CountryCode;
+            }
+
+            var createUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts";
+            var jsonContent = JsonSerializer.Serialize(newCustomerData);
+            var httpContent = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+
+            Console.WriteLine($"📤 Yeni müşteri oluşturuluyor: {customerName}");
+            Console.WriteLine($"📋 Gönderilen veri: {jsonContent}");
+
+            var createResponse = await client.PostAsync(createUrl, httpContent);
+            var createContent = await createResponse.Content.ReadAsStringAsync();
+
+            if (createResponse.IsSuccessStatusCode)
+            {
+                using var createDoc = JsonDocument.Parse(createContent);
+
+                // Response'dan yeni müşteri ID'sini al
+                if (createDoc.RootElement.TryGetProperty("d", out var dElement))
+                {
+                    if (dElement.TryGetProperty("ID", out var newIdProp))
+                    {
+                        var newCustomerId = Guid.Parse(newIdProp.GetString());
+                        Console.WriteLine($"✅ Yeni müşteri oluşturuldu: {newCustomerId}");
+                        _logger.LogInformation($"ExactOnline'da yeni müşteri oluşturuldu: {newCustomerId} - {customerName}");
+                        return newCustomerId;
+                    }
+                }
+
+                Console.WriteLine($"⚠️ Müşteri oluşturuldu ancak ID alınamadı. Response: {createContent}");
+            }
+            else
+            {
+                Console.WriteLine($"❌ Müşteri oluşturma hatası: {createResponse.StatusCode}");
+                Console.WriteLine($"📋 Hata detayı: {createContent}");
+                _logger.LogError($"ExactOnline müşteri oluşturma hatası: {createResponse.StatusCode} - {createContent}");
+            }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ ExactOnline müşteri arama hatası: {ex.Message}");
-            _logger.LogError($"Müşteri arama hatası: {ex.Message}");
+            Console.WriteLine($"❌ ExactOnline müşteri arama/oluşturma hatası: {ex.Message}");
+            _logger.LogError($"Müşteri arama/oluşturma hatası: {ex.Message}");
         }
 
         return null;

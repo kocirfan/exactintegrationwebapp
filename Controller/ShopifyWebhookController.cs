@@ -167,7 +167,7 @@ namespace ShopifyProductApp.Controllers
                 if (shopifyOrder.NoteAttributes != null && shopifyOrder.NoteAttributes.Any())
                 {
                     var deliveryTypeAttr = shopifyOrder.NoteAttributes
-                        .FirstOrDefault(attr => attr.Name == "_selected_delivery_type");
+                        .FirstOrDefault(attr => attr.Name == "selected_delivery_type");
                     if (deliveryTypeAttr != null)
                     {
                         deliveryType = deliveryTypeAttr.Value;
@@ -186,7 +186,7 @@ namespace ShopifyProductApp.Controllers
                     }
                 }
 
-                bool isPickup = deliveryType?.ToLower() == "pickup";
+                bool isPickup = deliveryType?.ToLower()?.Contains("pickup") == true;
                 DateTime defaultDeliveryDate = pickupDeliveryDate ?? DateTime.Now.AddDays(7);
 
                 // 2. Sipariş satırlarını hazırla
