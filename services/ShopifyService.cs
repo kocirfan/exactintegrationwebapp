@@ -2842,14 +2842,37 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
                         }
                         else
                         {
-                            // Çoklu varyant - varyant silme işlemi  
+                            // Çoklu varyant - varyant silme işlemi
                             Console.WriteLine($"SKU '{sku}' çoklu varyant ürün olarak tespit edildi (TotalVariants: {cleanProductInfo.TotalVariants}), varyant siliniyor...");
                             processResult = await DeleteVariantAsync(sku, cleanProductInfo);
                         }
                     }
                     else
                     {
-                        processResult = await ActiveProductAsync(sku, cleanProductInfo);
+                        // Aktife çekme: Eğer aynı SKU hem SingleProduct hem MultiVariant olarak bulunduysa,
+                        // SingleProduct olanı atlıyoruz (sadece MultiVariant aktife çekilir)
+                        bool hasBothTypes = searchResult.AllMatches.Any(m =>
+                            m.ProductType != null && m.ProductType.Equals("SingleProduct", StringComparison.OrdinalIgnoreCase)) &&
+                            searchResult.AllMatches.Any(m =>
+                            m.ProductType != null && m.ProductType.Equals("MultiVariant", StringComparison.OrdinalIgnoreCase));
+
+                        if (hasBothTypes && cleanProductInfo.ProductType != null &&
+                            cleanProductInfo.ProductType.Equals("SingleProduct", StringComparison.OrdinalIgnoreCase))
+                        {
+                            Console.WriteLine($"SKU '{sku}' hem ana ürün hem varyant olarak mevcut. SingleProduct (ID: {cleanProductInfo.ProductId}) aktife çekilmeyecek, atlanıyor.");
+                            processResult = new ProcessResult
+                            {
+                                Timestamp = DateTimeOffset.Now,
+                                Sku = sku,
+                                Status = "Atlandı - Aynı SKU için MultiVariant mevcut olduğundan SingleProduct aktife çekilmedi",
+                                ProcessType = "BackgroundService",
+                                ProductId = cleanProductInfo.ProductId
+                            };
+                        }
+                        else
+                        {
+                            processResult = await ActiveProductAsync(sku, cleanProductInfo);
+                        }
                     }
 
 

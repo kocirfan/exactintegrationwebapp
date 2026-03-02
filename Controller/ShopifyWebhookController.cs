@@ -232,8 +232,8 @@ namespace ShopifyProductApp.Controllers
 
                     if (exactItem != null && exactItem.ID.HasValue)
                     {
-                        double vatPercentage = 0;
-                        if (exactItem.SalesVat.HasValue && exactItem.SalesVat.Value > 0)
+                        double? vatPercentage = null;
+                        if (exactItem.SalesVat.HasValue)
                         {
                             vatPercentage = (double)(exactItem.SalesVat.Value / 100);
                         }
@@ -295,9 +295,9 @@ namespace ShopifyProductApp.Controllers
 
                         //  İNDİRİM YÜZDESİ (Exact için) -
                         double discountPercentage = unitPrice > 0
-                            ? ((unitPrice - unitPriceWithDiscount) / unitPrice) * 100
+                            ? Math.Round(((unitPrice - unitPriceWithDiscount) / unitPrice) * 100, 2)
                             : 0;
-                        var finalVATPercentage = vatPercentage == 0 ? 0.21 : vatPercentage;
+                        var finalVATPercentage = vatPercentage ?? 0.21;
                         salesOrderLines.Add(new ExactOrderLine
                         {
                             ID = Guid.NewGuid(),
@@ -308,6 +308,7 @@ namespace ShopifyProductApp.Controllers
                             NetPrice = unitPriceWithDiscount,           // İndirimli (pickup hariç)
                             Discount = discountPercentage,              // YÜZDE (pickup hariç)
                             VATPercentage = finalVATPercentage,
+                            VATCode = exactItem.SalesVatCode?.Trim(),
                             UnitCode = exactItem.Unit?.Trim() ?? "pc",
                             DeliveryDate = defaultDeliveryDate,
                             Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
@@ -368,13 +369,13 @@ namespace ShopifyProductApp.Controllers
                         var shippingItem = await _exactService.GetOrCreateItemAsync(shippingProductSku);
                         if (shippingItem != null && shippingItem.ID.HasValue)
                         {
-                            double shippingVatPercentage = 0;
-                            if (shippingItem.SalesVat.HasValue && shippingItem.SalesVat.Value > 0)
+                            double? shippingVatPercentage = null;
+                            if (shippingItem.SalesVat.HasValue)
                             {
                                 shippingVatPercentage = (double)(shippingItem.SalesVat.Value / 100);
                             }
 
-                            var finalShippingVATPercentage = shippingVatPercentage == 0 ? 0.21 : shippingVatPercentage;
+                            var finalShippingVATPercentage = shippingVatPercentage ?? 0.21;
 
                             // Gönderim ücreti fiyatı: Exact'tan gelen fiyat yoksa veya 0 ise standart 63,50
                             const double defaultShippingPrice = 63.50;
@@ -400,6 +401,7 @@ namespace ShopifyProductApp.Controllers
                                 NetPrice = shippingPrice,
                                 Discount = 0,
                                 VATPercentage = finalShippingVATPercentage,
+                                VATCode = shippingItem.SalesVatCode?.Trim(),
                                 UnitCode = shippingItem.Unit?.Trim() ?? "pc",
                                 DeliveryDate = defaultDeliveryDate,
                                 Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var divShipping) ? divShipping : 0

@@ -2157,6 +2157,54 @@ public class ExactService
         return true;
     }
 
+    public async Task<List<SalesItemPriceDto>> GetRecentlyChangedSalesItemPricesAsync(DateTime since)
+    {
+        var token = await GetValidToken();
+        if (token == null)
+        {
+            Console.WriteLine("Token alınamadı, SalesItemPrices getirilemedi");
+            return new List<SalesItemPriceDto>();
+        }
+
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var sinceStr = since.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss");
+        var filter = $"Modified gt datetime'{sinceStr}'";
+        var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/SalesItemPrices?$filter={Uri.EscapeDataString(filter)}&$select=ItemCode,Price,Modified";
+
+        Console.WriteLine($"📡 SalesItemPrices sorgulanıyor: {url}");
+
+        var response = await client.GetAsync(url);
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"❌ SalesItemPrices alınamadı: {response.StatusCode} - {error}");
+            return new List<SalesItemPriceDto>();
+        }
+
+        var json = await response.Content.ReadAsStringAsync();
+        var doc = JsonDocument.Parse(json);
+        var results = new List<SalesItemPriceDto>();
+
+        if (doc.RootElement.TryGetProperty("d", out var d) &&
+            d.TryGetProperty("results", out var resultArray))
+        {
+            foreach (var item in resultArray.EnumerateArray())
+            {
+                var itemCode = item.TryGetProperty("ItemCode", out var codeEl) ? codeEl.GetString() : null;
+                var price = item.TryGetProperty("Price", out var priceEl) ? priceEl.GetDecimal() : 0m;
+
+                if (!string.IsNullOrEmpty(itemCode))
+                    results.Add(new SalesItemPriceDto { ItemCode = itemCode, Price = price });
+            }
+        }
+
+        Console.WriteLine($"✅ {results.Count} değişmiş fiyat bulundu (son {(int)(DateTime.UtcNow - since).TotalMinutes} dakika)");
+        return results;
+    }
+
 
    public async Task<List<Account>> GetAllCustomersAsync()
     {
@@ -2779,7 +2827,7 @@ public class ExactService
         }
     }
 
-    private async Task<decimal> GetItemVatAsync(string vatCode)
+    private async Task<decimal?> GetItemVatAsync(string vatCode)
     {
         try
         {
@@ -2787,7 +2835,7 @@ public class ExactService
             if (token == null)
             {
                 Console.WriteLine("❌ Token alınamadı");
-                return 0;
+                return null;
             }
 
             using var client = new HttpClient();
@@ -2805,38 +2853,37 @@ public class ExactService
             {
                 var jsonResponse = await response.Content.ReadAsStringAsync();
                 var itemVatResponse = JsonSerializer.Deserialize<ItemVatResponse>(jsonResponse);
-                var percentage = itemVatResponse?.d?.results?.FirstOrDefault()?.Percentage ?? 0;
+                var result = itemVatResponse?.d?.results?.FirstOrDefault();
 
-                if (percentage > 0)
+                if (result == null)
                 {
-                    Console.WriteLine($"💰 KDV Oranı bulundu: {percentage}");
-                }
-                else
-                {
-                    Console.WriteLine($"⚠️ KDV Oranı bulunamadı (Kod: {cleanVatCode})");
+                    Console.WriteLine($"⚠️ KDV kodu bulunamadı (Kod: {cleanVatCode})");
+                    return null;
                 }
 
+                var percentage = result.Percentage ?? 0;
+                Console.WriteLine($"💰 KDV Oranı bulundu: {percentage} (Kod: {cleanVatCode})");
                 return percentage;
             }
             else
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
                 Console.WriteLine($"❌ KDV API Hatası: {response.StatusCode} - {errorContent}");
-                return 0;
+                return null;
             }
         }
         catch (Exception ex)
         {
             _logger.LogError($"KDV API çağrısı hatası: {ex.Message}");
             Console.WriteLine($"❌ KDV çağrısı başarısız: {ex.Message}");
-            return 0;
+            return null;
         }
     }
 
     private async Task<List<Item>> SetSalesVatAsync(List<Item> items)
     {
         List<Item> updatedItems = new List<Item>();
-        decimal vatPercentage = 0;
+        decimal? vatPercentage = null;
         string lastVatCode = null;
 
         foreach (var item in items)
@@ -2852,25 +2899,27 @@ public class ExactService
                     lastVatCode = currentVatCode;
                 }
 
-                // KDV oranı varsa kullan, yoksa 0
-                if (vatPercentage > 0)
+                // API'den değer geldiyse kullan (0 da geçerli bir KDV oranı)
+                if (vatPercentage.HasValue)
                 {
-                    item.SalesVat = vatPercentage * 100;
+                    item.SalesVat = vatPercentage.Value * 100;
                     Console.WriteLine($"✅ KDV hesaplandı - Kod: {currentVatCode}, Oran: %{item.SalesVat}");
                 }
                 else
                 {
-                    item.SalesVat = 0;
-                    Console.WriteLine($"⚠️ KDV oranı bulunamadı (Kod: {currentVatCode}), 0 olarak ayarlandı");
+                    // SalesVat null bırak → ShopifyOrderCrud fallback 0.21 kullanır
+                    item.SalesVat = null;
+                    Console.WriteLine($"⚠️ KDV oranı alınamadı (Kod: {currentVatCode}), fallback kullanılacak");
                 }
 
                 updatedItems.Add(item);
             }
             else
             {
-                item.SalesVat = 0;
+                // SalesVatCode boş → null bırak, Exact Online kendi kuralını uygulasın
+                item.SalesVat = null;
                 updatedItems.Add(item);
-                Console.WriteLine($"⚠️ SalesVatCode boş, KDV 0 olarak ayarlandı");
+                Console.WriteLine($"⚠️ SalesVatCode boş, KDV null olarak ayarlandı");
             }
         }
 
@@ -2905,7 +2954,7 @@ public class ExactService
             var orderJson = JsonSerializer.Serialize(order, options);
 
             Console.WriteLine($"📤 Gönderilen JSON (ilk 1000 karakter):");
-            Console.WriteLine(orderJson.Substring(0, Math.Min(1000, orderJson.Length)));
+            Console.WriteLine(orderJson.Substring(0, Math.Min(5000, orderJson.Length)));
 
             var content = new StringContent(orderJson, Encoding.UTF8, "application/json");
             var response = await client.PostAsync(createUrl, content);
@@ -3817,4 +3866,10 @@ public class ExactOrderDetail
     public Guid? DeliveryAddress { get; set; }
     public Guid? WarehouseID { get; set; }
     public List<ExactOrderLine> SalesOrderLines { get; set; } // Mevcut sınıfınızı kullanıyor
+}
+
+public class SalesItemPriceDto
+{
+    public string ItemCode { get; set; }
+    public decimal Price { get; set; }
 }

@@ -378,6 +378,93 @@ namespace ShopifyProductApp.Controllers
                 return StatusCode(500, new { error = ex.Message });
             }
         }
+        // ItemPrices Webhook Endpoints
+        [HttpGet("exact/itemprices")]
+        public IActionResult ValidateItemPricesWebhookEndpoint()
+        {
+            _logger.LogInformation("📡 ItemPrices webhook endpoint validation - GET request");
+            return Ok(new { status = "active", timestamp = DateTime.UtcNow });
+        }
+
+        [HttpPost("exact/itemprices")]
+        public async Task<IActionResult> HandleItemPricesWebhook()
+        {
+            var reader = new StreamReader(this.HttpContext.Request.Body);
+            var requestBody = await reader.ReadToEndAsync();
+
+            if (string.IsNullOrEmpty(requestBody))
+                return Ok();
+
+            var webhookData = JsonSerializer.Deserialize<JsonElement>(requestBody);
+
+            try
+            {
+                _logger.LogInformation("📨 Webhook alındı: ItemPrices değişikliği");
+
+                var logEntry = new WebhookLogEntry
+                {
+                    Timestamp = DateTime.UtcNow,
+                    Topic = "ItemPrices",
+                    Data = webhookData,
+                    ProcessedAt = DateTime.UtcNow,
+                    Status = "Received"
+                };
+
+                await SaveWebhookLogAsync(logEntry);
+                await ProcessItemPriceWebhook(webhookData);
+
+                return Ok(new { status = "success", timestamp = DateTime.UtcNow });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ ItemPrices webhook işlenirken hata: {Error}", ex.Message);
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
+        [HttpPost("setup/itemprices")]
+        public async Task<IActionResult> SetupItemPricesWebhook([FromBody] WebhookSetupRequest? request = null)
+        {
+            try
+            {
+                string callbackUrl;
+
+                if (request?.CallbackUrl != null)
+                {
+                    callbackUrl = request.CallbackUrl;
+                }
+                else
+                {
+                    var scheme = Request.Headers["X-Forwarded-Proto"].FirstOrDefault() ?? Request.Scheme;
+                    callbackUrl = $"{scheme}://{Request.Host}/api/webhook/exact/itemprices";
+                }
+
+                _logger.LogInformation("🔗 ItemPrices webhook kurulumu başlatılıyor. Callback URL: {CallbackUrl}", callbackUrl);
+
+                var success = await _exactService.CreateWebhookSubscriptionAsync(callbackUrl, "SalesItemPrices");
+
+                if (success)
+                {
+                    return Ok(new
+                    {
+                        success = true,
+                        message = "SalesItemPrices webhook aboneliği başarıyla oluşturuldu",
+                        callbackUrl = callbackUrl,
+                        topic = "SalesItemPrices"
+                    });
+                }
+                else
+                {
+                    return BadRequest(new { success = false, message = "ItemPrices webhook aboneliği oluşturulamadı" });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ ItemPrices webhook kurulumunda hata: {Error}", ex.Message);
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+
         //Customer Webhook endpoint
 
 
@@ -837,6 +924,57 @@ namespace ShopifyProductApp.Controllers
             catch
             {
                 return new List<WebhookLogEntry>();
+            }
+        }
+
+        private async Task ProcessItemPriceWebhook(JsonElement webhookData)
+        {
+            try
+            {
+                if (!webhookData.TryGetProperty("Content", out var contentElement))
+                    return;
+
+                if (!contentElement.TryGetProperty("ExactOnlineEndpoint", out var endpointElement))
+                    return;
+
+                var exactEndpoint = endpointElement.GetString();
+                _logger.LogInformation("🔗 ItemPrice endpoint alındı: {Endpoint}", exactEndpoint);
+
+                var itemPriceData = await FetchItemFromExact(exactEndpoint);
+                if (!itemPriceData.HasValue)
+                    return;
+
+                var itemCode = itemPriceData.Value.TryGetProperty("ItemCode", out var codeEl) ? codeEl.GetString() : null;
+                var price = itemPriceData.Value.TryGetProperty("Price", out var priceEl) ? priceEl.GetDecimal() : 0m;
+
+                if (string.IsNullOrEmpty(itemCode))
+                {
+                    _logger.LogWarning("⚠️ ItemPrices webhook'ta ItemCode bulunamadı");
+                    return;
+                }
+
+                _logger.LogInformation("💰 Fiyat güncelleniyor: SKU={ItemCode}, Price={Price}", itemCode, price);
+
+                using var scope = _serviceProvider.CreateScope();
+                var shopifyService = scope.ServiceProvider.GetRequiredService<ShopifyService>();
+
+                // Shopify'daki mevcut title'ı al — title değiştirmemek için
+                var searchResult = await shopifyService.GetProductBySkuWithDuplicateHandlingAsync(itemCode);
+                var currentTitle = searchResult.Found ? searchResult.Match?.ProductTitle : null;
+
+                if (currentTitle == null)
+                {
+                    _logger.LogWarning("⚠️ SKU '{ItemCode}' Shopify'da bulunamadı, fiyat güncellenemiyor", itemCode);
+                    return;
+                }
+
+                await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(itemCode, currentTitle, price, _updateLogFile);
+
+                _logger.LogInformation("✅ Fiyat güncellendi: SKU={ItemCode}, Price={Price}", itemCode, price);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ ItemPrice webhook işlenirken hata: {Error}", ex.Message);
             }
         }
 

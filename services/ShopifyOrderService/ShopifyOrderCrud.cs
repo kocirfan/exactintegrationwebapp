@@ -190,9 +190,10 @@ public class ShopifyOrderCrud
 
                 if (exactItem != null && exactItem.ID.HasValue)
                 {
-                    double vatPercentage = 0;
-                    if (exactItem.SalesVat.HasValue && exactItem.SalesVat.Value > 0)
+                    double? vatPercentage = null;
+                    if (exactItem.SalesVat.HasValue)
                     {
+                        _logger.LogInformation("🔍 SalesVat raw değeri: {SalesVat}", exactItem.SalesVat.Value);
                         vatPercentage = (double)(exactItem.SalesVat.Value / 100);
                     }
 
@@ -252,9 +253,11 @@ public class ShopifyOrderCrud
 
                     //  İNDİRİM YÜZDESİ (Exact için) -
                     double discountPercentage = unitPrice > 0
-                        ? ((unitPrice - unitPriceWithDiscount) / unitPrice) * 100
+                        ? Math.Round(((unitPrice - unitPriceWithDiscount) / unitPrice) * 100, 2)
                         : 0;
-                    var finalVATPercentage = vatPercentage == 0 ? 0.21 : vatPercentage;
+                    // SalesVat null ise Exact Online'a SalesVatCode'u bırakan API kodu belirleyecek (0.21 fallback)
+                    // SalesVat 0.0 ise gerçek %0 KDV'li ürün, olduğu gibi gönder
+                    var finalVATPercentage = vatPercentage ?? 0.21;
                     salesOrderLines.Add(new ExactOrderLine
                     {
                         ID = Guid.NewGuid(),
@@ -265,6 +268,7 @@ public class ShopifyOrderCrud
                         NetPrice = unitPriceWithDiscount,           // İndirimli (pickup hariç)
                         Discount = discountPercentage,              // YÜZDE (pickup hariç)
                         VATPercentage = finalVATPercentage,
+                        VATCode = exactItem.SalesVatCode?.Trim(),
                         UnitCode = exactItem.Unit?.Trim() ?? "pc",
                         DeliveryDate = defaultDeliveryDate,
                         Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
@@ -320,13 +324,13 @@ public class ShopifyOrderCrud
                     await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
                     if (shippingItem != null && shippingItem.ID.HasValue)
                     {
-                        double shippingVatPercentage = 0;
-                        if (shippingItem.SalesVat.HasValue && shippingItem.SalesVat.Value > 0)
+                        double? shippingVatPercentage = null;
+                        if (shippingItem.SalesVat.HasValue)
                         {
                             shippingVatPercentage = (double)(shippingItem.SalesVat.Value / 100);
                         }
 
-                        var finalShippingVATPercentage = shippingVatPercentage == 0 ? 0.21 : shippingVatPercentage;
+                        var finalShippingVATPercentage = shippingVatPercentage ?? 0.21;
 
                         const double defaultShippingPrice = 63.50;
                         double shippingPrice = shippingItem.StandardSalesPrice.HasValue && shippingItem.StandardSalesPrice.Value > 0
@@ -352,6 +356,7 @@ public class ShopifyOrderCrud
                             NetPrice = shippingPrice,
                             Discount = 0,
                             VATPercentage = finalShippingVATPercentage,
+                            VATCode = shippingItem.SalesVatCode?.Trim(),
                             UnitCode = shippingItem.Unit?.Trim() ?? "pc",
                             DeliveryDate = defaultDeliveryDate,
                             Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var divShipping) ? divShipping : 0

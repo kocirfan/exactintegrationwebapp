@@ -367,14 +367,17 @@ builder.Services.AddScoped<ShopifyGraphQLService>();
 builder.Services.AddSingleton<AppConfiguration>();
 
 // Thread-Safe Background Services
-builder.Services.AddHostedService<StockSyncBackgroundService>();        // Stok sync (günlük 09:30)
+// Stok sync (günlük 09:30)
+builder.Services.AddHostedService<StockSyncBackgroundService>();   
+                //yeni prcice     dursun  bi
+// builder.Services.AddHostedService<PriceSyncBackgroundService>();        // Fiyat sync (her 10 dakika, son 15dk değişenler)
 //bu eklendi classification kontrolü içim
 //builder.Services.AddHostedService<UpdateExactCustomerJob>();
 //New product var ama ProductPriceAndTitleUpdateService bundan emin değilim açık şimdilik
 builder.Services.AddHostedService<NewProductCreationService>();
 //bunu stok ile birleştireceğim
 // builder.Services.AddHostedService<ProductPriceAndTitleUpdate>(); 
-builder.Services.AddScoped<ProductPriceAndTitleUpdateService>();
+// builder.Services.AddScoped<ProductPriceAndTitleUpdateService>();
 builder.Services.AddSingleton<ITokenBlacklistService, TokenBlacklistService>();
 
 var app = builder.Build();
