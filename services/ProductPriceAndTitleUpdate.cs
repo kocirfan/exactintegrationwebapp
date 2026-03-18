@@ -128,6 +128,7 @@ namespace ShopifyProductApp.Services
                                 var sku = exactProduct.Code;
                                 var title = exactProduct.Description ?? "Başlık Bulunamadı";
                                 var price = exactProduct.StandardSalesPrice ?? 0m;
+                                var Id = exactProduct.ID;
 
                                 // Log dosyası oluştur (her ürün için ayrı)
                                 var logFile = _updateLogFile;
@@ -141,7 +142,7 @@ namespace ShopifyProductApp.Services
 
                                 // Shopify'da ürünü güncelle
                                 await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(
-                                    sku, title, price, logFile);
+                                    Id, sku, title, price, logFile);
 
                                 // Log dosyasından sonucu oku
                                 var updateResult = await ReadUpdateResult(logFile);

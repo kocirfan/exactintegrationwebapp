@@ -63,7 +63,7 @@ public class ShopifyService
 
             // ✅ Email'den customer ID'yi hemen al (cache'den, API sorgusu yok!)
             var emailLower = exactAccount.Email.ToLower();
-            
+
 
             if (!_customerEmailIdMap.ContainsKey(emailLower))
             {
@@ -105,7 +105,7 @@ public class ShopifyService
                     addresses = new[] { newAddress },
                     tags = $"{exactAccount.ClassificationDescription},betaling-factuur",
                     note = $"Exact Online ID: {exactAccount.ID}\nCode: {exactAccount.Code}\nVAT: {exactAccount.VATNumber ?? "N/A"}\nLast Updated: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss}",
-                     tax_exempt = countryCode == "NL" ? false : true,
+                    tax_exempt = countryCode == "NL" ? false : true,
                     metafields = new[]
                     {
                     new
@@ -172,9 +172,9 @@ public class ShopifyService
             Console.WriteLine($"✅ Müşteri başarıyla güncellendi: {exactAccount.Email}");
 
             // ✅ Eğer sendWelcomeEmail = true ise, ayrı GraphQL mutation ile mail gönder
-            if(emailLower == "irfnk83@gmail.com")
+            if (emailLower == "irfnk83@gmail.com")
             {
-                  Console.WriteLine($"📧 Hoşgeldin maili gönderiliyor...");
+                Console.WriteLine($"📧 Hoşgeldin maili gönderiliyor...");
                 var emailSent = await SendWelcomeEmailToCustomerAsync(customerId, logFilePath);
 
                 if (!emailSent)
@@ -183,7 +183,7 @@ public class ShopifyService
                 }
 
             }
-          
+
             return true;
         }
         catch (HttpRequestException ex) when (ex.Message.Contains("429"))
@@ -200,93 +200,93 @@ public class ShopifyService
     }
 
     // ✅ YENİ METOD: Mevcut müşteriye hoşgeldin maili gönder (GraphQL mutation)
-   private async Task<bool> SendWelcomeEmailToCustomerAsync(string customerId, string logFilePath = null)
-{
-    try
-    {
-        Console.WriteLine($"   📧 Hoşgeldin maili gönderiliyor: Customer ID {customerId}");
-
-        // ✅ REST API endpoint: POST /admin/api/{version}/customers/{customer_id}/send_invite.json
-        // Request body MUTLAKA {"customer_invite":{}} olmalı
-        var inviteData = new { customer_invite = new { } };
-        var jsonContent = new StringContent(JsonSerializer.Serialize(inviteData));
-        jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-
-        var response = await _client.PostAsync($"customers/{customerId}/send_invite.json", jsonContent);
-        var responseContent = await response.Content.ReadAsStringAsync();
-
-        await Task.Delay(500); // Rate limit
-
-        // ✅ Log dosyasına kaydet
-        if (!string.IsNullOrEmpty(logFilePath))
-        {
-            await AppendToLogFileAsync(logFilePath, new
-            {
-                Timestamp = DateTimeOffset.Now,
-                Action = "SendWelcomeEmail",
-                CustomerId = customerId,
-                Success = response.IsSuccessStatusCode,
-                StatusCode = (int)response.StatusCode,
-                ProcessType = "WelcomeEmailSend"
-            });
-        }
-
-        if (response.IsSuccessStatusCode)
-        {
-            Console.WriteLine($"   ✅ Hoşgeldin maili gönderildi: {customerId}");
-            return true;
-        }
-        else
-        {
-            Console.WriteLine($"   ❌ Hoşgeldin maili gönderilemedi - Status: {response.StatusCode}");
-            if (!string.IsNullOrEmpty(responseContent))
-            {
-                Console.WriteLine($"   Response: {responseContent}");
-            }
-            return false;
-        }
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"   ❌ Mail gönderme hatası: {ex.Message}");
-        return false;
-    }
-}
-
-// ✅ TOPLU MAIL GÖNDERME
-public async Task<(int successCount, int failureCount)> SendWelcomeEmailBatchAsync(
-    List<string> customerIds, 
-    string logFilePath = null)
-{
-    int successCount = 0;
-    int failureCount = 0;
-
-    Console.WriteLine($"📧 Toplu hoşgeldin maili gönderiliyor: {customerIds.Count} müşteri");
-
-    foreach (var customerId in customerIds)
+    private async Task<bool> SendWelcomeEmailToCustomerAsync(string customerId, string logFilePath = null)
     {
         try
         {
-            var result = await SendWelcomeEmailToCustomerAsync(customerId, logFilePath);
-            
-            if (result)
-                successCount++;
-            else
-                failureCount++;
+            Console.WriteLine($"   📧 Hoşgeldin maili gönderiliyor: Customer ID {customerId}");
 
-            // Rate limit: Shopify = 2 requests/second max
-            await Task.Delay(500);
+            // ✅ REST API endpoint: POST /admin/api/{version}/customers/{customer_id}/send_invite.json
+            // Request body MUTLAKA {"customer_invite":{}} olmalı
+            var inviteData = new { customer_invite = new { } };
+            var jsonContent = new StringContent(JsonSerializer.Serialize(inviteData));
+            jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+            var response = await _client.PostAsync($"customers/{customerId}/send_invite.json", jsonContent);
+            var responseContent = await response.Content.ReadAsStringAsync();
+
+            await Task.Delay(500); // Rate limit
+
+            // ✅ Log dosyasına kaydet
+            if (!string.IsNullOrEmpty(logFilePath))
+            {
+                await AppendToLogFileAsync(logFilePath, new
+                {
+                    Timestamp = DateTimeOffset.Now,
+                    Action = "SendWelcomeEmail",
+                    CustomerId = customerId,
+                    Success = response.IsSuccessStatusCode,
+                    StatusCode = (int)response.StatusCode,
+                    ProcessType = "WelcomeEmailSend"
+                });
+            }
+
+            if (response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"   ✅ Hoşgeldin maili gönderildi: {customerId}");
+                return true;
+            }
+            else
+            {
+                Console.WriteLine($"   ❌ Hoşgeldin maili gönderilemedi - Status: {response.StatusCode}");
+                if (!string.IsNullOrEmpty(responseContent))
+                {
+                    Console.WriteLine($"   Response: {responseContent}");
+                }
+                return false;
+            }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ {customerId} için hata: {ex.Message}");
-            failureCount++;
+            Console.WriteLine($"   ❌ Mail gönderme hatası: {ex.Message}");
+            return false;
         }
     }
 
-    Console.WriteLine($"✅ Toplu işlem tamamlandı: {successCount} başarılı, {failureCount} başarısız");
-    return (successCount, failureCount);
-}
+    // ✅ TOPLU MAIL GÖNDERME
+    public async Task<(int successCount, int failureCount)> SendWelcomeEmailBatchAsync(
+        List<string> customerIds,
+        string logFilePath = null)
+    {
+        int successCount = 0;
+        int failureCount = 0;
+
+        Console.WriteLine($"📧 Toplu hoşgeldin maili gönderiliyor: {customerIds.Count} müşteri");
+
+        foreach (var customerId in customerIds)
+        {
+            try
+            {
+                var result = await SendWelcomeEmailToCustomerAsync(customerId, logFilePath);
+
+                if (result)
+                    successCount++;
+                else
+                    failureCount++;
+
+                // Rate limit: Shopify = 2 requests/second max
+                await Task.Delay(500);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ {customerId} için hata: {ex.Message}");
+                failureCount++;
+            }
+        }
+
+        Console.WriteLine($"✅ Toplu işlem tamamlandı: {successCount} başarılı, {failureCount} başarısız");
+        return (successCount, failureCount);
+    }
 
     // ✅ YENİ METOD: Tüm müşteri email'lerini ve ID'lerini al
     private async Task<Dictionary<string, string>> GetAllCustomerEmailsWithIdAsync()
@@ -406,89 +406,90 @@ public async Task<(int successCount, int failureCount)> SendWelcomeEmailBatchAsy
         }
     }
 
-    
 
-   // Validasyon helper metodu - sınıfınıza ekleyin
-private string ValidatePhoneNumber(string phoneNumber)
-{
-    if (string.IsNullOrWhiteSpace(phoneNumber))
-        return "";
 
-    // Sadece rakamları al
-    var digitsOnly = System.Text.RegularExpressions.Regex.Replace(phoneNumber, @"[^\d]", "");
-    
-    // Minimum 10 rakam kontrolü
-    if (digitsOnly.Length < 4)
+    // Validasyon helper metodu - sınıfınıza ekleyin
+    private string ValidatePhoneNumber(string phoneNumber)
+    {
+        if (string.IsNullOrWhiteSpace(phoneNumber))
+            return "";
+
+        // Sadece rakamları al
+        var digitsOnly = System.Text.RegularExpressions.Regex.Replace(phoneNumber, @"[^\d]", "");
+
+        // Minimum 10 rakam kontrolü
+        if (digitsOnly.Length < 4)
         {
-              return ""; // Geçersiz - boş döndür
-        }else if (digitsOnly.Length < 20)
+            return ""; // Geçersiz - boş döndür
+        }
+        else if (digitsOnly.Length < 20)
         {
             return digitsOnly.Substring(1, 11);
         }
-      
-    
-    // İlk 10 rakamı döndür
-   return digitsOnly.Substring(1, 11);
-}
 
-// Ana metod - güncellenmiş kısım
-public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string customerTag = "b2b-customer", string logFilePath = null, bool sendWelcomeEmail = true)
-{
-    try
+
+        // İlk 10 rakamı döndür
+        return digitsOnly.Substring(1, 11);
+    }
+
+    // Ana metod - güncellenmiş kısım
+    public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string customerTag = "b2b-customer", string logFilePath = null, bool sendWelcomeEmail = true)
     {
-        var emailExists = CustomerFindByEmail(exactAccount.Email);
-
-        Console.WriteLine($"🆕 Yeni müşteri oluşturuluyor: Email={exactAccount.Email}");
-
-        if (emailExists == null)
+        try
         {
-            Console.WriteLine($"⚠️ Bu email zaten mevcut, müşteri oluşturulmadı: {exactAccount.Email}");
+            var emailExists = CustomerFindByEmail(exactAccount.Email);
 
-            if (!string.IsNullOrEmpty(logFilePath))
+            Console.WriteLine($"🆕 Yeni müşteri oluşturuluyor: Email={exactAccount.Email}");
+
+            if (emailExists == null)
             {
-                await AppendToLogFileAsync(logFilePath, new
-                {
-                    Timestamp = DateTimeOffset.Now,
-                    Action = "CreateCustomer_Skipped",
-                    Email = exactAccount.Email,
-                    Name = exactAccount.Name,
-                    Reason = "Email already exists in Shopify",
-                    ProcessType = "NewCustomerCreation"
-                });
+                Console.WriteLine($"⚠️ Bu email zaten mevcut, müşteri oluşturulmadı: {exactAccount.Email}");
 
-                Console.WriteLine($"   📝 Log kaydedildi: {logFilePath}");
+                if (!string.IsNullOrEmpty(logFilePath))
+                {
+                    await AppendToLogFileAsync(logFilePath, new
+                    {
+                        Timestamp = DateTimeOffset.Now,
+                        Action = "CreateCustomer_Skipped",
+                        Email = exactAccount.Email,
+                        Name = exactAccount.Name,
+                        Reason = "Email already exists in Shopify",
+                        ProcessType = "NewCustomerCreation"
+                    });
+
+                    Console.WriteLine($"   📝 Log kaydedildi: {logFilePath}");
+                }
+
+                return false;
             }
 
-            return false;
-        }
+            Console.WriteLine($" Email mevcut değil, yeni müşteri oluşturulacak");
+            Console.WriteLine($"   📧 Hoşgeldin emaili: {(sendWelcomeEmail ? "GÖNDERİLECEK" : "GÖNDERİLMEYECEK")}");
 
-        Console.WriteLine($" Email mevcut değil, yeni müşteri oluşturulacak");
-        Console.WriteLine($"   📧 Hoşgeldin emaili: {(sendWelcomeEmail ? "GÖNDERİLECEK" : "GÖNDERİLMEYECEK")}");
+            var countryCode = ConvertToCountryCode(exactAccount.Country, exactAccount.CountryName);
+            Console.WriteLine($"   🌍 Ülke: {exactAccount.CountryName} → {countryCode}");
 
-        var countryCode = ConvertToCountryCode(exactAccount.Country, exactAccount.CountryName);
-        Console.WriteLine($"   🌍 Ülke: {exactAccount.CountryName} → {countryCode}");
+            // ✅ Telefon numarası validasyonu
+            // var validatedPhone = ValidatePhoneNumber(exactAccount.Phone);
+            // if (string.IsNullOrEmpty(validatedPhone) && !string.IsNullOrEmpty(exactAccount.Phone))
+            // {
+            //     Console.WriteLine($"   ⚠️ Telefon numarası geçersiz: {exactAccount.Phone} (atlanıyor, müşteri yine kaydedilecek)");
+            // }
 
-        // ✅ Telefon numarası validasyonu
-        // var validatedPhone = ValidatePhoneNumber(exactAccount.Phone);
-        // if (string.IsNullOrEmpty(validatedPhone) && !string.IsNullOrEmpty(exactAccount.Phone))
-        // {
-        //     Console.WriteLine($"   ⚠️ Telefon numarası geçersiz: {exactAccount.Phone} (atlanıyor, müşteri yine kaydedilecek)");
-        // }
-
-        var customerData = new
-        {
-            customer = new
+            var customerData = new
             {
-                first_name = GetFirstName(exactAccount.Name),
-                last_name = GetLastName(exactAccount.Name),
-                email = exactAccount.Email ?? "",
-                phone = "",  // ✅ Validasyon yapılmış telefon
-                verified_email = true,
-                tax_number = exactAccount.VATNumber ?? "",
-                send_email_welcome = sendWelcomeEmail,
-                send_email_invite = true,
-                addresses = new[]
+                customer = new
                 {
+                    first_name = GetFirstName(exactAccount.Name),
+                    last_name = GetLastName(exactAccount.Name),
+                    email = exactAccount.Email ?? "",
+                    phone = "",  // ✅ Validasyon yapılmış telefon
+                    verified_email = true,
+                    tax_number = exactAccount.VATNumber ?? "",
+                    send_email_welcome = sendWelcomeEmail,
+                    send_email_invite = true,
+                    addresses = new[]
+                    {
                     new
                     {
                         address1 = exactAccount.AddressLine1 ?? "",
@@ -502,11 +503,11 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
                         company = exactAccount.Name ?? ""
                     }
                 },
-                tags = $"{exactAccount.ClassificationDescription},betaling-factuur",
-                note = $"Exact Online ID: {exactAccount.ID}\nVAT: {exactAccount.VATNumber ?? "N/A"}",
-                tax_exempt = countryCode == "NL" ? false : true,
-                metafields = new[]
-                {
+                    tags = $"{exactAccount.ClassificationDescription},betaling-factuur",
+                    note = $"Exact Online ID: {exactAccount.ID}\nVAT: {exactAccount.VATNumber ?? "N/A"}",
+                    tax_exempt = countryCode == "NL" ? false : true,
+                    metafields = new[]
+                    {
                     new
                     {
                         @namespace = "exact_online",
@@ -529,71 +530,71 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
                         type = "single_line_text_field"
                     }
                 }
-            }
-        };
+                }
+            };
 
-        var jsonContent = new StringContent(JsonSerializer.Serialize(customerData));
-        jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            var jsonContent = new StringContent(JsonSerializer.Serialize(customerData));
+            jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
-        Console.WriteLine($"   📤 Shopify API'ye istek gönderiliyor...");
-        Console.WriteLine($"   🏷️  Tag: {customerTag}");
+            Console.WriteLine($"   📤 Shopify API'ye istek gönderiliyor...");
+            Console.WriteLine($"   🏷️  Tag: {customerTag}");
 
-        var response = await _client.PostAsync("customers.json", jsonContent);
-        var responseContent = await response.Content.ReadAsStringAsync();
+            var response = await _client.PostAsync("customers.json", jsonContent);
+            var responseContent = await response.Content.ReadAsStringAsync();
 
-        // ✅ API çağrısından sonra delay
-        await Task.Delay(500);
+            // ✅ API çağrısından sonra delay
+            await Task.Delay(500);
 
-        if (!string.IsNullOrEmpty(logFilePath))
-        {
-            await AppendToLogFileAsync(logFilePath, new
+            if (!string.IsNullOrEmpty(logFilePath))
             {
-                Timestamp = DateTimeOffset.Now,
-                Action = "CreateCustomer",
-                Email = exactAccount.Email,
-                Name = exactAccount.Name,
-                Code = exactAccount.Code,
-                Country = countryCode,
-                Phone = "",  // ✅ Validasyon sonrası telefon
-                OriginalPhone = exactAccount.Phone,
-                Tag = customerTag,
-                SendWelcomeEmail = sendWelcomeEmail,
-                Success = response.IsSuccessStatusCode,
-                StatusCode = (int)response.StatusCode,
-                ProcessType = "NewCustomerCreation"
-            });
+                await AppendToLogFileAsync(logFilePath, new
+                {
+                    Timestamp = DateTimeOffset.Now,
+                    Action = "CreateCustomer",
+                    Email = exactAccount.Email,
+                    Name = exactAccount.Name,
+                    Code = exactAccount.Code,
+                    Country = countryCode,
+                    Phone = "",  // ✅ Validasyon sonrası telefon
+                    OriginalPhone = exactAccount.Phone,
+                    Tag = customerTag,
+                    SendWelcomeEmail = sendWelcomeEmail,
+                    Success = response.IsSuccessStatusCode,
+                    StatusCode = (int)response.StatusCode,
+                    ProcessType = "NewCustomerCreation"
+                });
 
-            Console.WriteLine($"   📝 Log kaydedildi: {logFilePath}");
+                Console.WriteLine($"   📝 Log kaydedildi: {logFilePath}");
+            }
+
+            if (response.IsSuccessStatusCode)
+            {
+                // ✅ Yeni müşteri cache'e ekle
+                _existingCustomerEmails.Add(exactAccount.Email.ToLower());
+
+                Console.WriteLine($"✅ Müşteri başarıyla oluşturuldu: {exactAccount.Email}");
+                return true;
+            }
+            else
+            {
+                Console.WriteLine($"❌ Müşteri oluşturma başarısız - Status: {response.StatusCode}");
+                Console.WriteLine($"Hata: {responseContent}");
+                return false;
+            }
         }
-
-        if (response.IsSuccessStatusCode)
+        catch (HttpRequestException ex) when (ex.Message.Contains("429"))
         {
-            // ✅ Yeni müşteri cache'e ekle
-            _existingCustomerEmails.Add(exactAccount.Email.ToLower());
-
-            Console.WriteLine($"✅ Müşteri başarıyla oluşturuldu: {exactAccount.Email}");
-            return true;
+            Console.WriteLine($"   ⏳ Rate limit hatası: {ex.Message}");
+            Console.WriteLine($"   ⏳ 2 saniye bekleniyor...");
+            await Task.Delay(2000);
+            return false;
         }
-        else
+        catch (Exception ex)
         {
-            Console.WriteLine($"❌ Müşteri oluşturma başarısız - Status: {response.StatusCode}");
-            Console.WriteLine($"Hata: {responseContent}");
+            Console.WriteLine($"❌ Kritik hata: {ex.Message}");
             return false;
         }
     }
-    catch (HttpRequestException ex) when (ex.Message.Contains("429"))
-    {
-        Console.WriteLine($"   ⏳ Rate limit hatası: {ex.Message}");
-        Console.WriteLine($"   ⏳ 2 saniye bekleniyor...");
-        await Task.Delay(2000);
-        return false;
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"❌ Kritik hata: {ex.Message}");
-        return false;
-    }
-}
 
     public async Task<bool> CreateCustomerAsync(Account exactAccount, string customerTag = "b2b-customer", string logFilePath = null, bool sendWelcomeEmail = true)
     {
@@ -2448,7 +2449,7 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
     }
 
 
-    public async Task UpdateProductTitleAndPriceBySkuAndSaveRawAsync(string sku, string newTitle, decimal newPrice, string filePath)
+    public async Task UpdateProductTitleAndPriceBySkuAndSaveRawAsync(Guid productId, string sku, string newTitle, decimal newPrice, string filePath)
     {
         var logEntry = new
         {
@@ -2469,20 +2470,32 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
 
             if (!searchResult.Found)
             {
-                Console.WriteLine($"SKU '{sku}' bulunamadı. Sebep: {searchResult.Reason}");
-                logEntry = new
+                Console.WriteLine($"SKU '{sku}' bulunamadı. Sebep: {searchResult.Reason}. ExactProductId '{productId}' ile metafield araması yapılıyor...");
+                searchResult = await GetProductByExactProductIdAsync(productId);
+
+                if (!searchResult.Found)
                 {
-                    Timestamp = DateTimeOffset.Now,
-                    Sku = sku,
-                    Title = newTitle,
-                    Price = newPrice,
-                    Status = $"SKU bulunamadı: {searchResult.Reason}",
-                    UpdatedCount = 0,
-                    UpdatedProducts = new List<string>(),
-                    ProcessType = "BackgroundService"
-                };
+                    Console.WriteLine($"ExactProductId '{productId}' ile de ürün bulunamadı. Sebep: {searchResult.Reason}");
+                    logEntry = new
+                    {
+                        Timestamp = DateTimeOffset.Now,
+                        Sku = sku,
+                        Title = newTitle,
+                        Price = newPrice,
+                        Status = $"SKU ve ExactProductId ile ürün bulunamadı: {searchResult.Reason}",
+                        UpdatedCount = 0,
+                        UpdatedProducts = new List<string>(),
+                        ProcessType = "BackgroundService"
+                    };
+                    // Log dosyasına yaz ve çık
+                    await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(logEntry, _jsonOptions));
+                    Console.WriteLine($"📝 İşlem logu {filePath} dosyasına yazıldı.");
+                    return;
+                }
+
+                Console.WriteLine($"✅ ExactProductId '{productId}' ile ürün bulundu: {searchResult.Match?.ProductTitle}");
             }
-            else
+
             {
                 var allMatches = searchResult.AllMatches ?? new List<ProductInfo> { searchResult.Match };
                 var successfulUpdates = new List<string>();
@@ -2504,24 +2517,7 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
 
                         if (isMultiVariant)
                         {
-                            // Çoklu varyantlı ürün - hem ürün title'ı hem varyant price'ı güncelle
-
-                            // 1. Ürün title'ını güncelle
-                            // var productPayload = new
-                            // {
-                            //     product = new
-                            //     {
-                            //         id = productIdToUpdate,
-                            //         title = newTitle
-                            //     }
-                            // };
-
-                            // var productJsonContent = new StringContent(JsonSerializer.Serialize(productPayload));
-                            // productJsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-
-                            // var productResponse = await _client.PutAsync($"products/{productIdToUpdate}/variants/{variantIdToUpdate}.json", productJsonContent);
-                            // productResponse.EnsureSuccessStatusCode();
-
+                            // Çoklu varyantlı ürün - sadece varyant price'ı güncelle
                             // 2. Varyant price'ını güncelle
                             var variantPayload = new
                             {
@@ -2546,7 +2542,8 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
                         }
                         else
                         {
-                            // Tekli varyantlı ürün - hem title hem price güncelle
+                            // Tekli varyantlı ürün - title, price ve SKU güncelle
+                            var currentSku = product.SKU;
                             var payload = new
                             {
                                 product = new
@@ -2555,12 +2552,13 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
                                     title = newTitle,
                                     variants = new[]
                                     {
-                                    new
-                                    {
-                                        id = variantIdToUpdate,
-                                        price = newPrice.ToString("F2")
+                                        new
+                                        {
+                                            id = variantIdToUpdate,
+                                            price = newPrice.ToString("F2"),
+                                            sku
+                                        }
                                     }
-                                }
                                 }
                             };
 
@@ -2573,6 +2571,8 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
                             Console.WriteLine($" SingleProduct güncellendi: {currentTitle}");
                             Console.WriteLine($"   Title: '{currentTitle}' -> '{newTitle}'");
                             Console.WriteLine($"   Price: '{currentPrice}' -> '{newPrice:F2}'");
+                            if (currentSku != sku)
+                                Console.WriteLine($"   SKU: '{currentSku}' -> '{sku}'");
 
                             successfulUpdates.Add($"{currentTitle} (SingleProduct-{product.ProductStatus})");
                         }
@@ -2828,7 +2828,7 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
                         SearchMethod = productInfo.SearchMethod
                     };
 
-                    ProcessResult processResult;
+                    ProcessResult processResult = new();
                     if (isWebshopItem == 0)
                     {
                         // ProductType'a göre karar ver
@@ -2847,33 +2847,34 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
                             processResult = await DeleteVariantAsync(sku, cleanProductInfo);
                         }
                     }
-                    else
-                    {
-                        // Aktife çekme: Eğer aynı SKU hem SingleProduct hem MultiVariant olarak bulunduysa,
-                        // SingleProduct olanı atlıyoruz (sadece MultiVariant aktife çekilir)
-                        bool hasBothTypes = searchResult.AllMatches.Any(m =>
-                            m.ProductType != null && m.ProductType.Equals("SingleProduct", StringComparison.OrdinalIgnoreCase)) &&
-                            searchResult.AllMatches.Any(m =>
-                            m.ProductType != null && m.ProductType.Equals("MultiVariant", StringComparison.OrdinalIgnoreCase));
+                    // else
+                    // {
+                    //     // Aktife çekme: Eğer aynı SKU hem SingleProduct hem MultiVariant olarak bulunduysa,
+                    //     // SingleProduct olanı atlıyoruz (sadece MultiVariant aktife çekilir)
+                    //     bool hasBothTypes = searchResult.AllMatches.Any(m =>
+                    //         m.ProductType != null && m.ProductType.Equals("SingleProduct", StringComparison.OrdinalIgnoreCase)) &&
+                    //         searchResult.AllMatches.Any(m =>
+                    //         m.ProductType != null && m.ProductType.Equals("MultiVariant", StringComparison.OrdinalIgnoreCase));
 
-                        if (hasBothTypes && cleanProductInfo.ProductType != null &&
-                            cleanProductInfo.ProductType.Equals("SingleProduct", StringComparison.OrdinalIgnoreCase))
-                        {
-                            Console.WriteLine($"SKU '{sku}' hem ana ürün hem varyant olarak mevcut. SingleProduct (ID: {cleanProductInfo.ProductId}) aktife çekilmeyecek, atlanıyor.");
-                            processResult = new ProcessResult
-                            {
-                                Timestamp = DateTimeOffset.Now,
-                                Sku = sku,
-                                Status = "Atlandı - Aynı SKU için MultiVariant mevcut olduğundan SingleProduct aktife çekilmedi",
-                                ProcessType = "BackgroundService",
-                                ProductId = cleanProductInfo.ProductId
-                            };
-                        }
-                        else
-                        {
-                            processResult = await ActiveProductAsync(sku, cleanProductInfo);
-                        }
-                    }
+                    //     if (hasBothTypes && cleanProductInfo.ProductType != null &&
+                    //         cleanProductInfo.ProductType.Equals("SingleProduct", StringComparison.OrdinalIgnoreCase))
+                    //     {
+                    //         Console.WriteLine($"SKU '{sku}' hem ana ürün hem varyant olarak mevcut. SingleProduct (ID: {cleanProductInfo.ProductId}) aktife çekilmeyecek, atlanıyor.");
+                    //         processResult = new ProcessResult
+                    //         {
+                    //             Timestamp = DateTimeOffset.Now,
+                    //             Sku = sku,
+                    //             Status = "Atlandı - Aynı SKU için MultiVariant mevcut olduğundan SingleProduct aktife çekilmedi",
+                    //             ProcessType = "BackgroundService",
+                    //             ProductId = cleanProductInfo.ProductId
+                    //         };
+                    //     }
+                    //     else
+                    //     {
+                    //          Console.WriteLine($"SKU '{sku}' ürün active etmeye düştü");
+                    //         processResult = await ActiveProductAsync(sku, cleanProductInfo);
+                    //     }
+                    // }
 
 
 
@@ -3034,6 +3035,7 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
             };
         }
     }
+    //şimdilik kullanmıyorum
     public async Task<ProcessResult> ActiveProductAsync(string sku, ProductInfo productInfo)
     {
         var payload = new
@@ -3041,7 +3043,7 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
             product = new
             {
                 id = productInfo.ProductId,
-                status = "active"
+                status = "archived"
             }
         };
 
@@ -3139,6 +3141,356 @@ public async Task<bool> CreateCustomerEmailAsync(Account exactAccount, string cu
         return isTaxableItem == "1" ||
                isTaxableItem.Equals("true", StringComparison.OrdinalIgnoreCase) ||
                isTaxableItem.Equals("yes", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// custom.exact_product_id metafield değeri verilen exactProductId'e eşit olan Shopify ürününü GraphQL ile arar.
+    /// </summary>
+    public async Task<ProductSearchResult> GetProductByExactProductIdAsync(Guid exactProductId)
+    {
+        var exactIdStr = exactProductId.ToString();
+        try
+        {
+            // 1. Önce yerel cache'e bak — anında sonuç
+            var cachedProductId = await ExactProductIdMetafieldSyncService.GetFromCacheAsync(exactIdStr);
+            if (!string.IsNullOrEmpty(cachedProductId))
+            {
+                Console.WriteLine($"⚡ Cache hit: ExactProductId '{exactIdStr}' → {cachedProductId}");
+                var cachedInfo = await GetProductInfoByShopifyIdAsync(cachedProductId);
+                if (cachedInfo != null)
+                {
+                    cachedInfo.SearchMethod = "Cache_ExactProductId";
+                    return new ProductSearchResult
+                    {
+                        Found = true,
+                        Match = cachedInfo,
+                        AllMatches = [cachedInfo],
+                        DuplicateCount = 1,
+                        Selection = "Cache hit"
+                    };
+                }
+            }
+
+            // 2. Cache'de yoksa Shopify'ı tara, bulunca cache'e kaydet
+            var graphqlResult = await SearchProductByMetafieldGraphQLAsync(exactIdStr);
+            if (graphqlResult.Found && graphqlResult.Match?.ProductId != null)
+                await ExactProductIdMetafieldSyncService.SaveToCacheAsync(exactIdStr, graphqlResult.Match.ProductId);
+
+            if (graphqlResult.Found)
+                return graphqlResult;
+
+            return new ProductSearchResult { Found = false, Reason = $"ExactProductId '{exactIdStr}' için metafield eşleşmesi bulunamadı" };
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"GetProductByExactProductIdAsync hatası: {ex.Message}");
+            return new ProductSearchResult { Found = false, Error = ex.Message };
+        }
+    }
+
+    private async Task<ProductInfo> GetProductInfoByShopifyIdAsync(string shopifyProductId)
+    {
+        try
+        {
+            var gid = shopifyProductId.StartsWith("gid://") ? shopifyProductId : $"gid://shopify/Product/{shopifyProductId}";
+            var query = $@"
+{{
+  product(id: ""{gid}"") {{
+    id
+    title
+    status
+    createdAt
+    updatedAt
+    variants(first: 10) {{
+      edges {{
+        node {{
+          id
+          sku
+          price
+          inventoryQuantity
+        }}
+      }}
+    }}
+  }}
+}}";
+            var payload = new { query };
+            var jsonContent = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+            var response = await _client.PostAsync("graphql.json", jsonContent);
+            if (!response.IsSuccessStatusCode) return null;
+
+            var responseContent = await response.Content.ReadAsStringAsync();
+            var result = JsonSerializer.Deserialize<JsonElement>(responseContent);
+
+            if (!result.TryGetProperty("data", out var data) ||
+                !data.TryGetProperty("product", out var node) ||
+                node.ValueKind == JsonValueKind.Null)
+                return null;
+
+            var variantEdges = node.TryGetProperty("variants", out var variantsEl) &&
+                               variantsEl.TryGetProperty("edges", out var ve) ? ve : default;
+            int totalVariants = variantEdges.ValueKind == JsonValueKind.Array ? variantEdges.GetArrayLength() : 0;
+            string variantId = null, variantSku = null, variantPrice = null;
+            int inventoryQty = 0;
+            if (variantEdges.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var ve2 in variantEdges.EnumerateArray())
+                {
+                    var vNode = ve2.GetProperty("node");
+                    variantId = vNode.TryGetProperty("id", out var vid) ? vid.GetString() : null;
+                    variantSku = vNode.TryGetProperty("sku", out var vsku) ? vsku.GetString() : null;
+                    variantPrice = vNode.TryGetProperty("price", out var vprice) ? vprice.GetString() : null;
+                    inventoryQty = vNode.TryGetProperty("inventoryQuantity", out var vqty) ? vqty.GetInt32() : 0;
+                    break;
+                }
+            }
+
+            return new ProductInfo
+            {
+                ProductId = node.TryGetProperty("id", out var pId) ? pId.GetString() : null,
+                ProductTitle = node.TryGetProperty("title", out var title) ? title.GetString() : null,
+                ProductStatus = node.TryGetProperty("status", out var status) ? status.GetString() : null,
+                VariantId = variantId,
+                SKU = variantSku,
+                Price = variantPrice,
+                InventoryQuantity = inventoryQty,
+                CreatedAt = node.TryGetProperty("createdAt", out var created) ? created.GetString() : null,
+                UpdatedAt = node.TryGetProperty("updatedAt", out var updated) ? updated.GetString() : null,
+                TotalVariants = totalVariants,
+                ProductType = totalVariants == 1 ? "SingleProduct" : "MultiVariant"
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task<ProductSearchResult> SearchProductByMetafieldGraphQLAsync(string exactIdStr)
+    {
+        // Shopify GraphQL products query'sinde metafield filtresi UUID için çalışmıyor.
+        // Bunun yerine cursor-based pagination ile tüm ürünleri tara,
+        // her ürünün metafield değerini kontrol et.
+        // Ama bu çok yavaş (binlerce ürün varsa).
+        //
+        // Daha akıllıca: önce ilk 250 ürünü dene, bulamazsan devam et.
+        // Çoğu durumda metafield sync çalıştıysa ilk turda bulunur.
+
+        string cursor = null;
+        int pageCount = 0;
+        const int maxPages = 40; // 40 * 250 = 10.000 ürün limiti
+
+        while (pageCount < maxPages)
+        {
+            pageCount++;
+            var afterClause = cursor != null ? $", after: \"{cursor}\"" : "";
+
+            var query = $@"
+{{
+  products(first: 250{afterClause}) {{
+    pageInfo {{
+      hasNextPage
+      endCursor
+    }}
+    edges {{
+      node {{
+        id
+        title
+        status
+        createdAt
+        updatedAt
+        metafield(namespace: ""custom"", key: ""exact_product_id"") {{
+          value
+        }}
+        variants(first: 10) {{
+          edges {{
+            node {{
+              id
+              sku
+              price
+              inventoryQuantity
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}";
+
+            var payload = new { query };
+            var jsonContent = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+            var response = await _client.PostAsync("graphql.json", jsonContent);
+            response.EnsureSuccessStatusCode();
+
+            var responseContent = await response.Content.ReadAsStringAsync();
+            var result = JsonSerializer.Deserialize<JsonElement>(responseContent);
+
+            if (!result.TryGetProperty("data", out var data) ||
+                !data.TryGetProperty("products", out var products) ||
+                !products.TryGetProperty("edges", out var edges))
+                break;
+
+            foreach (var edge in edges.EnumerateArray())
+            {
+                var node = edge.GetProperty("node");
+
+                // Metafield değerini oku ve tam eşleşme kontrol et
+                if (!node.TryGetProperty("metafield", out var metafieldEl) ||
+                    metafieldEl.ValueKind == JsonValueKind.Null ||
+                    !metafieldEl.TryGetProperty("value", out var metafieldValue))
+                    continue;
+
+                var metafieldStr = metafieldValue.GetString();
+                if (!string.Equals(metafieldStr, exactIdStr, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                // Tam eşleşme bulundu
+                var variantEdges = node.TryGetProperty("variants", out var variantsEl) &&
+                                   variantsEl.TryGetProperty("edges", out var ve) ? ve : default;
+
+                int totalVariants = variantEdges.ValueKind == JsonValueKind.Array ? variantEdges.GetArrayLength() : 0;
+                string variantId = null, variantSku = null, variantPrice = null;
+                int inventoryQty = 0;
+
+                if (variantEdges.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var ve2 in variantEdges.EnumerateArray())
+                    {
+                        var vNode = ve2.GetProperty("node");
+                        variantId = vNode.TryGetProperty("id", out var vid) ? vid.GetString() : null;
+                        variantSku = vNode.TryGetProperty("sku", out var vsku) ? vsku.GetString() : null;
+                        variantPrice = vNode.TryGetProperty("price", out var vprice) ? vprice.GetString() : null;
+                        inventoryQty = vNode.TryGetProperty("inventoryQuantity", out var vqty) ? vqty.GetInt32() : 0;
+                        break;
+                    }
+                }
+
+                var match = new ProductInfo
+                {
+                    ProductId = node.TryGetProperty("id", out var pId) ? pId.GetString() : null,
+                    ProductTitle = node.TryGetProperty("title", out var title) ? title.GetString() : null,
+                    ProductStatus = node.TryGetProperty("status", out var status) ? status.GetString() : null,
+                    VariantId = variantId,
+                    SKU = variantSku,
+                    Price = variantPrice,
+                    InventoryQuantity = inventoryQty,
+                    CreatedAt = node.TryGetProperty("createdAt", out var created) ? created.GetString() : null,
+                    UpdatedAt = node.TryGetProperty("updatedAt", out var updated) ? updated.GetString() : null,
+                    TotalVariants = totalVariants,
+                    ProductType = totalVariants == 1 ? "SingleProduct" : "MultiVariant",
+                    SearchMethod = "GraphQL_MetafieldScan"
+                };
+
+                Console.WriteLine($"✅ ExactProductId '{exactIdStr}' → Shopify ürünü bulundu: {match.ProductTitle} (sayfa {pageCount})");
+
+                return new ProductSearchResult
+                {
+                    Found = true,
+                    Match = match,
+                    AllMatches = [match],
+                    DuplicateCount = 1,
+                    Selection = "Exact metafield match"
+                };
+            }
+
+            // Sonraki sayfa var mı?
+            if (!products.TryGetProperty("pageInfo", out var pageInfo) ||
+                !pageInfo.TryGetProperty("hasNextPage", out var hasNext) ||
+                !hasNext.GetBoolean())
+                break;
+
+            cursor = pageInfo.TryGetProperty("endCursor", out var endCursor) ? endCursor.GetString() : null;
+            if (cursor == null) break;
+
+            // Shopify rate limit için kısa bekleme
+            await Task.Delay(200);
+        }
+
+        return new ProductSearchResult { Found = false };
+    }
+
+    /// <summary>
+    /// Shopify ürününün custom.exact_product_id metafield'ını GraphQL ile günceller.
+    /// </summary>
+    public async Task<bool> UpdateProductExactIdMetafieldAsync(string shopifyProductId, string exactId)
+    {
+        try
+        {
+            // Shopify GraphQL product ID formatı: "gid://shopify/Product/1234567890"
+            var gid = shopifyProductId.StartsWith("gid://") ? shopifyProductId : $"gid://shopify/Product/{shopifyProductId}";
+
+            var mutation = @"
+mutation productUpdate($input: ProductInput!) {
+  productUpdate(input: $input) {
+    product {
+      id
+      metafields(first: 5) {
+        edges {
+          node {
+            namespace
+            key
+            value
+          }
+        }
+      }
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}";
+
+            var variables = new
+            {
+                input = new
+                {
+                    id = gid,
+                    metafields = new[]
+                    {
+                        new
+                        {
+                            @namespace = "custom",
+                            key = "exact_product_id",
+                            value = exactId,
+                            type = "single_line_text_field"
+                        }
+                    }
+                }
+            };
+
+            var payload = new { query = mutation, variables };
+            var jsonContent = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+
+            var response = await _client.PostAsync("graphql.json", jsonContent);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"❌ Metafield GraphQL isteği başarısız: {response.StatusCode}");
+                return false;
+            }
+
+            var responseBody = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(responseBody);
+
+            // userErrors kontrolü
+            if (doc.RootElement.TryGetProperty("data", out var data) &&
+                data.TryGetProperty("productUpdate", out var productUpdate) &&
+                productUpdate.TryGetProperty("userErrors", out var userErrors) &&
+                userErrors.GetArrayLength() > 0)
+            {
+                var firstError = userErrors[0];
+                var errMsg = firstError.TryGetProperty("message", out var msg) ? msg.GetString() : "Bilinmeyen hata";
+                Console.WriteLine($"❌ Shopify metafield userError: {errMsg}");
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ UpdateProductExactIdMetafieldAsync hatası: {ex.Message}");
+            return false;
+        }
     }
 
     // Helper class

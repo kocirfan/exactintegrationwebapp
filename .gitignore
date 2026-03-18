@@ -41,3 +41,4 @@ Migrations/
 *.nupkg
 *.snupkg
 inactiveproduct.json
+.gitnexus

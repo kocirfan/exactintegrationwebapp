@@ -1240,6 +1240,95 @@ public class ExactService
         return allItems;
     }
 
+    /// <summary>
+    /// Exact'tan webshop ürünlerini sayfalı olarak çeker (skip/top destekli).
+    /// </summary>
+    public async Task<List<Dictionary<string, object>>?> GetWebshopItemsPageAsync(int skip, int top)
+    {
+        var token = await GetValidToken();
+        if (token == null) return null;
+
+        using var client = new HttpClient();
+        client.Timeout = TimeSpan.FromMinutes(5);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/Items?$filter=IsWebshopItem eq 1&$top={top}&$skip={skip}&$select=ID,Code,Description";
+
+        int retryCount = 0;
+        const int maxRetries = 3;
+
+        while (retryCount <= maxRetries)
+        {
+            try
+            {
+                var resp = await client.GetAsync(url);
+
+                if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    retryCount++;
+                    _logger.LogWarning("⏳ Rate limit, {Retry}. deneme için 30sn bekleniyor...", retryCount);
+                    await Task.Delay(30000);
+                    continue;
+                }
+
+                if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    token = await GetValidToken();
+                    if (token == null) return null;
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+                    continue;
+                }
+
+                if (!resp.IsSuccessStatusCode)
+                {
+                    _logger.LogError("❌ Exact API hatası: {Status}", resp.StatusCode);
+                    return null;
+                }
+
+                var json = await resp.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(json);
+
+                if (!doc.RootElement.TryGetProperty("d", out var dataElement)) return null;
+
+                JsonElement resultsElement;
+                if (dataElement.ValueKind == JsonValueKind.Object && dataElement.TryGetProperty("results", out var res))
+                    resultsElement = res;
+                else if (dataElement.ValueKind == JsonValueKind.Array)
+                    resultsElement = dataElement;
+                else
+                    return null;
+
+                var items = new List<Dictionary<string, object>>();
+                foreach (var item in resultsElement.EnumerateArray())
+                {
+                    var dict = new Dictionary<string, object>();
+                    foreach (var prop in item.EnumerateObject())
+                    {
+                        dict[prop.Name] = prop.Value.ValueKind switch
+                        {
+                            JsonValueKind.Number => prop.Value.GetDouble(),
+                            JsonValueKind.String => prop.Value.GetString() ?? string.Empty,
+                            JsonValueKind.True => true,
+                            JsonValueKind.False => false,
+                            JsonValueKind.Null => string.Empty,
+                            _ => prop.Value.ToString() ?? string.Empty
+                        };
+                    }
+                    items.Add(dict);
+                }
+
+                return items;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ GetWebshopItemsPageAsync hatası");
+                return null;
+            }
+        }
+
+        return null;
+    }
 
     // hem webshop hem 24 saatte güncellenen ürünler
 
@@ -2172,7 +2261,7 @@ public class ExactService
 
         var sinceStr = since.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss");
         var filter = $"Modified gt datetime'{sinceStr}'";
-        var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/SalesItemPrices?$filter={Uri.EscapeDataString(filter)}&$select=ItemCode,Price,Modified";
+        var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/SalesItemPrices?$filter={Uri.EscapeDataString(filter)}&$select=Item,ItemCode,Price,Modified";
 
         Console.WriteLine($"📡 SalesItemPrices sorgulanıyor: {url}");
 
@@ -2195,9 +2284,11 @@ public class ExactService
             {
                 var itemCode = item.TryGetProperty("ItemCode", out var codeEl) ? codeEl.GetString() : null;
                 var price = item.TryGetProperty("Price", out var priceEl) ? priceEl.GetDecimal() : 0m;
+                var productId = item.TryGetProperty("Item", out var idEl) ? idEl.GetGuid() : Guid.Empty;
+
 
                 if (!string.IsNullOrEmpty(itemCode))
-                    results.Add(new SalesItemPriceDto { ItemCode = itemCode, Price = price });
+                    results.Add(new SalesItemPriceDto { ItemCode = itemCode, Price = price, ID = productId });
             }
         }
 
@@ -3870,6 +3961,7 @@ public class ExactOrderDetail
 
 public class SalesItemPriceDto
 {
+    public Guid ID {get; set;}
     public string ItemCode { get; set; }
     public decimal Price { get; set; }
 }

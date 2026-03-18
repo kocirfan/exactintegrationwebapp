@@ -66,7 +66,7 @@ namespace ShopifyProductApp.Services
             try
             {
                 // Son 15 dakikada değişen fiyatları al
-                var since = DateTime.UtcNow.AddMinutes(-15);
+                var since = DateTime.UtcNow.AddMinutes(-150);
                 var changedPrices = await exactService.GetRecentlyChangedSalesItemPricesAsync(since);
 
                 if (changedPrices == null || changedPrices.Count == 0)
@@ -86,13 +86,20 @@ namespace ShopifyProductApp.Services
 
                         if (!searchResult.Found || searchResult.Match == null)
                         {
-                            _logger.LogInformation("⚠️ SKU '{ItemCode}' Shopify'da bulunamadı, atlanıyor", priceEntry.ItemCode);
-                            continue;
+                            _logger.LogInformation("⚠️ SKU '{ItemCode}' Shopify'da bulunamadı, ID Bakılıyor", priceEntry.ItemCode);
+                            searchResult = await shopifyService.GetProductByExactProductIdAsync(priceEntry.ID);
+                            if (!searchResult.Found || searchResult.Match == null)
+                            {
+                                 _logger.LogInformation("⚠️ SKU '{ItemCode}' Shopify'da bulunamadı, ID Bakıldı yine yok atlanıyor", priceEntry.ItemCode);
+                                continue;
+                            }
+
                         }
 
                         var currentTitle = searchResult.Match.ProductTitle;
 
                         await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(
+                            priceEntry.ID,
                             priceEntry.ItemCode,
                             currentTitle,
                             priceEntry.Price,

@@ -411,7 +411,7 @@ namespace ShopifyProductApp.Controllers
                 };
 
                 await SaveWebhookLogAsync(logEntry);
-                await ProcessItemPriceWebhook(webhookData);
+               // await ProcessItemPriceWebhook(webhookData);
 
                 return Ok(new { status = "success", timestamp = DateTime.UtcNow });
             }
@@ -756,12 +756,12 @@ namespace ShopifyProductApp.Controllers
                         if(isBundle)
                         {
                            _logger.LogInformation("🛒 Shopify sadece isim ve fiyat: {Code}", code);
-                            await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(code, description, price, _updateLogFile);
+                            await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(productId,code, description, price, _updateLogFile);
                         }
                         else
                         {
                              _logger.LogInformation("🛒 Shopify her ikiside güncellenilecek: {Code}", code);
-                            await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(code, description, price, _updateLogFile);
+                            await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(productId, code, description, price, _updateLogFile);
                             await shopifyService.ActiveOrPassif(code, isWebshopItem);
                         }
                         
@@ -927,56 +927,57 @@ namespace ShopifyProductApp.Controllers
             }
         }
 
-        private async Task ProcessItemPriceWebhook(JsonElement webhookData)
-        {
-            try
-            {
-                if (!webhookData.TryGetProperty("Content", out var contentElement))
-                    return;
+        // private async Task ProcessItemPriceWebhook(JsonElement webhookData)
+        // {
+        //     try
+        //     {
+        //         if (!webhookData.TryGetProperty("Content", out var contentElement))
+        //             return;
 
-                if (!contentElement.TryGetProperty("ExactOnlineEndpoint", out var endpointElement))
-                    return;
+        //         if (!contentElement.TryGetProperty("ExactOnlineEndpoint", out var endpointElement))
+        //             return;
 
-                var exactEndpoint = endpointElement.GetString();
-                _logger.LogInformation("🔗 ItemPrice endpoint alındı: {Endpoint}", exactEndpoint);
+        //         var exactEndpoint = endpointElement.GetString();
+        //         _logger.LogInformation("🔗 ItemPrice endpoint alındı: {Endpoint}", exactEndpoint);
 
-                var itemPriceData = await FetchItemFromExact(exactEndpoint);
-                if (!itemPriceData.HasValue)
-                    return;
+        //         var itemPriceData = await FetchItemFromExact(exactEndpoint);
+        //         if (!itemPriceData.HasValue)
+        //             return;
 
-                var itemCode = itemPriceData.Value.TryGetProperty("ItemCode", out var codeEl) ? codeEl.GetString() : null;
-                var price = itemPriceData.Value.TryGetProperty("Price", out var priceEl) ? priceEl.GetDecimal() : 0m;
+        //         var itemCode = itemPriceData.Value.TryGetProperty("ItemCode", out var codeEl) ? codeEl.GetString() : null;
+        //         var price = itemPriceData.Value.TryGetProperty("Price", out var priceEl) ? priceEl.GetDecimal() : 0m;
+                
 
-                if (string.IsNullOrEmpty(itemCode))
-                {
-                    _logger.LogWarning("⚠️ ItemPrices webhook'ta ItemCode bulunamadı");
-                    return;
-                }
+        //         if (string.IsNullOrEmpty(itemCode))
+        //         {
+        //             _logger.LogWarning("⚠️ ItemPrices webhook'ta ItemCode bulunamadı");
+        //             return;
+        //         }
 
-                _logger.LogInformation("💰 Fiyat güncelleniyor: SKU={ItemCode}, Price={Price}", itemCode, price);
+        //         _logger.LogInformation("💰 Fiyat güncelleniyor: SKU={ItemCode}, Price={Price}", itemCode, price);
 
-                using var scope = _serviceProvider.CreateScope();
-                var shopifyService = scope.ServiceProvider.GetRequiredService<ShopifyService>();
+        //         using var scope = _serviceProvider.CreateScope();
+        //         var shopifyService = scope.ServiceProvider.GetRequiredService<ShopifyService>();
 
-                // Shopify'daki mevcut title'ı al — title değiştirmemek için
-                var searchResult = await shopifyService.GetProductBySkuWithDuplicateHandlingAsync(itemCode);
-                var currentTitle = searchResult.Found ? searchResult.Match?.ProductTitle : null;
+        //         // Shopify'daki mevcut title'ı al — title değiştirmemek için
+        //         var searchResult = await shopifyService.GetProductBySkuWithDuplicateHandlingAsync(itemCode);
+        //         var currentTitle = searchResult.Found ? searchResult.Match?.ProductTitle : null;
 
-                if (currentTitle == null)
-                {
-                    _logger.LogWarning("⚠️ SKU '{ItemCode}' Shopify'da bulunamadı, fiyat güncellenemiyor", itemCode);
-                    return;
-                }
+        //         if (currentTitle == null)
+        //         {
+        //             _logger.LogWarning("⚠️ SKU '{ItemCode}' Shopify'da bulunamadı, fiyat güncellenemiyor", itemCode);
+        //             return;
+        //         }
 
-                await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(itemCode, currentTitle, price, _updateLogFile);
+        //         //await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(itemCode, currentTitle, price, _updateLogFile);
 
-                _logger.LogInformation("✅ Fiyat güncellendi: SKU={ItemCode}, Price={Price}", itemCode, price);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ ItemPrice webhook işlenirken hata: {Error}", ex.Message);
-            }
-        }
+        //         _logger.LogInformation("✅ Fiyat güncellendi: SKU={ItemCode}, Price={Price}", itemCode, price);
+        //     }
+        //     catch (Exception ex)
+        //     {
+        //         _logger.LogError(ex, "❌ ItemPrice webhook işlenirken hata: {Error}", ex.Message);
+        //     }
+        // }
 
         private DateTime? ParseMicrosoftJsonDate(JsonElement element, string propertyName)
         {
