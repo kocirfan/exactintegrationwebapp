@@ -2449,6 +2449,37 @@ public class ShopifyService
     }
 
 
+    /// <summary>
+    /// Sadece varyant fiyatını günceller. VariantId zaten biliniyorsa direkt PUT yapar.
+    /// </summary>
+    public async Task<bool> UpdateVariantPriceDirectAsync(string productId, string variantId, decimal newPrice)
+    {
+        try
+        {
+            var productIdRaw = productId.Replace("gid://shopify/Product/", "");
+            var variantIdRaw = variantId.Replace("gid://shopify/ProductVariant/", "");
+
+            var payload = new
+            {
+                variant = new
+                {
+                    id = variantIdRaw,
+                    price = newPrice.ToString("F2")
+                }
+            };
+
+            var json = JsonSerializer.Serialize(payload);
+            var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+            var response = await _client.PutAsync($"products/{productIdRaw}/variants/{variantIdRaw}.json", content);
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public async Task UpdateProductTitleAndPriceBySkuAndSaveRawAsync(Guid productId, string sku, string newTitle, decimal newPrice, string filePath)
     {
         var logEntry = new
@@ -3489,6 +3520,126 @@ mutation productUpdate($input: ProductInput!) {
         catch (Exception ex)
         {
             Console.WriteLine($"❌ UpdateProductExactIdMetafieldAsync hatası: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Email adresine göre Shopify customer ID'sini GraphQL ile döner. Bulunamazsa null.
+    /// </summary>
+    public async Task<string> GetShopifyCustomerIdByEmailAsync(string email)
+    {
+        try
+        {
+            var query = $@"{{
+  customers(first: 1, query: ""email:{email}"") {{
+    edges {{
+      node {{
+        id
+      }}
+    }}
+  }}
+}}";
+
+            var payload = new { query };
+            var jsonContent = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+
+            var response = await _client.PostAsync("graphql.json", jsonContent);
+            if (!response.IsSuccessStatusCode) return null;
+
+            var responseBody = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(responseBody);
+
+            if (doc.RootElement.TryGetProperty("data", out var data) &&
+                data.TryGetProperty("customers", out var customers) &&
+                customers.TryGetProperty("edges", out var edges) &&
+                edges.GetArrayLength() > 0)
+            {
+                var node = edges[0].GetProperty("node");
+                var gid = node.GetProperty("id").GetString();
+                // gid://shopify/Customer/123456 -> 123456
+                return gid?.Split('/').Last();
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ GetShopifyCustomerIdByEmailAsync hatası: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Shopify customer'ının custom.exact_customer_id metafield'ını GraphQL ile günceller.
+    /// </summary>
+    public async Task<bool> UpdateCustomerExactIdMetafieldAsync(string shopifyCustomerId, string exactId)
+    {
+        try
+        {
+            var gid = shopifyCustomerId.StartsWith("gid://") ? shopifyCustomerId : $"gid://shopify/Customer/{shopifyCustomerId}";
+
+            var mutation = @"
+mutation customerUpdate($input: CustomerInput!) {
+  customerUpdate(input: $input) {
+    customer {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}";
+
+            var variables = new
+            {
+                input = new
+                {
+                    id = gid,
+                    metafields = new[]
+                    {
+                        new
+                        {
+                            @namespace = "custom",
+                            key = "exact_customer_id",
+                            value = exactId,
+                            type = "single_line_text_field"
+                        }
+                    }
+                }
+            };
+
+            var payload = new { query = mutation, variables };
+            var jsonContent = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+
+            var response = await _client.PostAsync("graphql.json", jsonContent);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"❌ Customer metafield GraphQL isteği başarısız: {response.StatusCode}");
+                return false;
+            }
+
+            var responseBody = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(responseBody);
+
+            if (doc.RootElement.TryGetProperty("data", out var data) &&
+                data.TryGetProperty("customerUpdate", out var customerUpdate) &&
+                customerUpdate.TryGetProperty("userErrors", out var userErrors) &&
+                userErrors.GetArrayLength() > 0)
+            {
+                var firstError = userErrors[0];
+                var errMsg = firstError.TryGetProperty("message", out var msg) ? msg.GetString() : "Bilinmeyen hata";
+                Console.WriteLine($"❌ Shopify customer metafield userError: {errMsg}");
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ UpdateCustomerExactIdMetafieldAsync hatası: {ex.Message}");
             return false;
         }
     }

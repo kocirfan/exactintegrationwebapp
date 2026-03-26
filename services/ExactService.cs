@@ -2297,6 +2297,108 @@ public class ExactService
     }
 
 
+   public async Task<string> GetSalesItemPricesRawAsync(string itemCode)
+    {
+        var token = await GetValidToken();
+        if (token == null) return "{\"error\": \"Token alınamadı\"}";
+
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        string url;
+        if (string.IsNullOrWhiteSpace(itemCode))
+        {
+            url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/SalesItemPrices?$top=5&$select=Item,ItemCode,ItemDescription,Price,Currency,Unit,UnitDescription,Quantity,StartDate,EndDate,Modified,ModifierFullName,Created,Account,AccountName";
+        }
+        else
+        {
+            var filter = $"ItemCode eq '{itemCode}'";
+            url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/SalesItemPrices?$filter={Uri.EscapeDataString(filter)}&$top=10&$select=Item,ItemCode,ItemDescription,Price,Currency,Unit,UnitDescription,Quantity,StartDate,EndDate,Modified,ModifierFullName,Created,Account,AccountName";
+        }
+
+        Console.WriteLine($"📡 [DEBUG] SalesItemPrices raw sorgu: {url}");
+        var response = await client.GetAsync(url);
+        return await response.Content.ReadAsStringAsync();
+    }
+
+   public async Task<List<SalesItemPriceDto>> GetSalesItemPricesByItemCodeAsync(string itemCode)
+    {
+        var token = await GetValidToken();
+        if (token == null)
+        {
+            Console.WriteLine("Token alınamadı, SalesItemPrices getirilemedi");
+            return new List<SalesItemPriceDto>();
+        }
+
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var filter = $"ItemCode eq '{itemCode}'";
+        var select = "$select=Item,ItemCode,ItemDescription,Price,Currency,Unit,UnitDescription,Quantity,StartDate,EndDate,Modified,ModifierFullName,Created,Account,AccountName";
+        var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/SalesItemPrices?$filter={Uri.EscapeDataString(filter)}&{select}&$orderby=Modified desc";
+
+        Console.WriteLine($"📡 SalesItemPrices sorgulanıyor: {url}");
+
+        var response = await client.GetAsync(url);
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"❌ SalesItemPrices alınamadı: {response.StatusCode} - {error}");
+            return new List<SalesItemPriceDto>();
+        }
+
+        var json = await response.Content.ReadAsStringAsync();
+        var doc = JsonDocument.Parse(json);
+        var results = new List<SalesItemPriceDto>();
+
+        if (doc.RootElement.TryGetProperty("d", out var d) &&
+            d.TryGetProperty("results", out var resultArray))
+        {
+            foreach (var item in resultArray.EnumerateArray())
+            {
+                DateTime? ParseExactDate(JsonElement el)
+                {
+                    if (el.ValueKind == JsonValueKind.String)
+                    {
+                        var s = el.GetString();
+                        if (s != null && s.StartsWith("/Date("))
+                        {
+                            var ms = long.Parse(s.Replace("/Date(", "").Replace(")/", ""));
+                            return DateTimeOffset.FromUnixTimeMilliseconds(ms).UtcDateTime;
+                        }
+                    }
+                    return null;
+                }
+
+                var dto = new SalesItemPriceDto
+                {
+                    ID = item.TryGetProperty("Item", out var idEl) ? idEl.GetGuid() : Guid.Empty,
+                    ItemCode = item.TryGetProperty("ItemCode", out var codeEl) ? codeEl.GetString() : null,
+                    ItemDescription = item.TryGetProperty("ItemDescription", out var itemDescEl) ? itemDescEl.GetString() : null,
+                    Price = item.TryGetProperty("Price", out var priceEl) ? priceEl.GetDecimal() : 0m,
+                    Currency = item.TryGetProperty("Currency", out var currEl) ? currEl.GetString() : null,
+                    Unit = item.TryGetProperty("Unit", out var unitEl) ? unitEl.GetString()?.Trim() : null,
+                    UnitDescription = item.TryGetProperty("UnitDescription", out var unitDescEl) ? unitDescEl.GetString() : null,
+                    Quantity = item.TryGetProperty("Quantity", out var qtyEl) && qtyEl.ValueKind != JsonValueKind.Null ? qtyEl.GetDouble() : null,
+                    StartDate = item.TryGetProperty("StartDate", out var startEl) ? ParseExactDate(startEl) : null,
+                    EndDate = item.TryGetProperty("EndDate", out var endEl) ? ParseExactDate(endEl) : null,
+                    Modified = item.TryGetProperty("Modified", out var modEl) ? ParseExactDate(modEl) : null,
+                    ModifierFullName = item.TryGetProperty("ModifierFullName", out var modNameEl) ? modNameEl.GetString() : null,
+                    Created = item.TryGetProperty("Created", out var createdEl) ? ParseExactDate(createdEl) : null,
+                    Account = item.TryGetProperty("Account", out var accEl) && accEl.ValueKind != JsonValueKind.Null ? accEl.GetString() : null,
+                    AccountName = item.TryGetProperty("AccountName", out var accNameEl) ? accNameEl.GetString() : null,
+                };
+
+                results.Add(dto);
+            }
+        }
+
+        Console.WriteLine($"✅ {results.Count} fiyat kaydı bulundu (ItemCode: {itemCode})");
+        return results;
+    }
+
    public async Task<List<Account>> GetAllCustomersAsync()
     {
         var token = await GetValidToken();
@@ -3890,6 +3992,183 @@ public class ExactService
             return DateTime.MinValue;
         }
     }
+
+    public async Task<List<ExactItemSummaryDto>> GetAllItemsSummaryAsync()
+    {
+        var token = await GetValidToken();
+        if (token == null)
+        {
+            Console.WriteLine("❌ Token alınamadı, Items getirilemedi");
+            return new List<ExactItemSummaryDto>();
+        }
+
+        using var client = new HttpClient();
+        client.Timeout = TimeSpan.FromMinutes(10);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var results = new List<ExactItemSummaryDto>();
+        int top = 60;
+        int skip = 0;
+        int page = 1;
+
+        Console.WriteLine("📦 Tüm ürünler çekiliyor (ID, Code, StandardSalesPrice)...");
+
+        while (true)
+        {
+            var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/Items?$select=ID,Code,StandardSalesPrice&$top={top}&$skip={skip}";
+            Console.WriteLine($"📡 Sayfa {page}, Skip: {skip}");
+
+            var resp = await client.GetAsync(url);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    Console.WriteLine("⏳ Rate limit, 30 saniye bekleniyor...");
+                    await Task.Delay(30000);
+                    continue;
+                }
+                if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    token = await GetValidToken();
+                    if (token == null) break;
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+                    continue;
+                }
+                Console.WriteLine($"❌ API Hatası: {resp.StatusCode}");
+                break;
+            }
+
+            var json = await resp.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+
+            if (!doc.RootElement.TryGetProperty("d", out var d)) break;
+
+            JsonElement items;
+            if (d.ValueKind == JsonValueKind.Object && d.TryGetProperty("results", out var res))
+                items = res;
+            else if (d.ValueKind == JsonValueKind.Array)
+                items = d;
+            else break;
+
+            int count = items.GetArrayLength();
+            Console.WriteLine($"✅ Sayfa {page}: {count} ürün");
+
+            foreach (var item in items.EnumerateArray())
+            {
+                var id = item.TryGetProperty("ID", out var idEl) ? idEl.GetString() : null;
+                var code = item.TryGetProperty("Code", out var codeEl) ? codeEl.GetString() : null;
+                decimal? standardSalesPrice = null;
+                if (item.TryGetProperty("StandardSalesPrice", out var priceEl) && priceEl.ValueKind == JsonValueKind.Number)
+                    standardSalesPrice = priceEl.GetDecimal();
+
+                results.Add(new ExactItemSummaryDto
+                {
+                    ID = id,
+                    Code = code,
+                    StandardSalesPrice = standardSalesPrice
+                });
+            }
+
+            if (count < top) break;
+            skip += top;
+            page++;
+        }
+
+        Console.WriteLine($"🎉 Toplam {results.Count} ürün çekildi");
+        return results;
+    }
+
+    /// <summary>
+    /// Exact'tan Status eq 'C' olan müşterileri sayfalı olarak çeker (ID ve Email alanları).
+    /// </summary>
+    public async Task<List<Dictionary<string, object>>> GetCustomersPageAsync(int skip, int top)
+    {
+        var token = await GetValidToken();
+        if (token == null) return null;
+
+        using var client = new HttpClient();
+        client.Timeout = TimeSpan.FromMinutes(5);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Status eq 'C'&$top={top}&$skip={skip}&$select=ID,Email,Name";
+
+        int retryCount = 0;
+        const int maxRetries = 3;
+
+        while (retryCount <= maxRetries)
+        {
+            try
+            {
+                var resp = await client.GetAsync(url);
+
+                if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    retryCount++;
+                    _logger.LogWarning("⏳ Rate limit, {Retry}. deneme için 30sn bekleniyor...", retryCount);
+                    await Task.Delay(30000);
+                    continue;
+                }
+
+                if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    token = await GetValidToken();
+                    if (token == null) return null;
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+                    continue;
+                }
+
+                if (!resp.IsSuccessStatusCode)
+                {
+                    _logger.LogError("❌ Exact API hatası: {Status}", resp.StatusCode);
+                    return null;
+                }
+
+                var json = await resp.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(json);
+
+                if (!doc.RootElement.TryGetProperty("d", out var dataElement)) return null;
+
+                JsonElement resultsElement;
+                if (dataElement.ValueKind == JsonValueKind.Object && dataElement.TryGetProperty("results", out var res))
+                    resultsElement = res;
+                else if (dataElement.ValueKind == JsonValueKind.Array)
+                    resultsElement = dataElement;
+                else
+                    return null;
+
+                var items = new List<Dictionary<string, object>>();
+                foreach (var item in resultsElement.EnumerateArray())
+                {
+                    var dict = new Dictionary<string, object>();
+                    foreach (var prop in item.EnumerateObject())
+                    {
+                        dict[prop.Name] = prop.Value.ValueKind switch
+                        {
+                            JsonValueKind.Number => prop.Value.GetDouble(),
+                            JsonValueKind.String => prop.Value.GetString() ?? string.Empty,
+                            JsonValueKind.True => true,
+                            JsonValueKind.False => false,
+                            JsonValueKind.Null => string.Empty,
+                            _ => prop.Value.ToString() ?? string.Empty
+                        };
+                    }
+                    items.Add(dict);
+                }
+
+                return items;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ GetCustomersPageAsync hatası");
+                return null;
+            }
+        }
+
+        return null;
+    }
 }
 
 
@@ -3961,7 +4240,26 @@ public class ExactOrderDetail
 
 public class SalesItemPriceDto
 {
-    public Guid ID {get; set;}
+    public Guid ID { get; set; }
     public string ItemCode { get; set; }
+    public string ItemDescription { get; set; }
     public decimal Price { get; set; }
+    public string Currency { get; set; }
+    public string Unit { get; set; }
+    public string UnitDescription { get; set; }
+    public double? Quantity { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public DateTime? Modified { get; set; }
+    public string ModifierFullName { get; set; }
+    public DateTime? Created { get; set; }
+    public string Account { get; set; }
+    public string AccountName { get; set; }
+}
+
+public class ExactItemSummaryDto
+{
+    public string ID { get; set; }
+    public string Code { get; set; }
+    public decimal? StandardSalesPrice { get; set; }
 }

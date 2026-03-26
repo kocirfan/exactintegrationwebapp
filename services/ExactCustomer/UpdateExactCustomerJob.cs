@@ -34,7 +34,7 @@ namespace ShopifyProductApp.Services
             {
                 try
                 {
-                    _logger.LogInformation("🔄 Product sync işlemi başlıyor...");
+                    _logger.LogInformation("🔄 Customer sync işlemi başlıyor...");
 
                     using (var scope = _serviceProvider.CreateScope())
                     {

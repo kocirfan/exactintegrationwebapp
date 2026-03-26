@@ -66,7 +66,7 @@ namespace ShopifyProductApp.Services
             try
             {
                 // Son 15 dakikada değişen fiyatları al
-                var since = DateTime.UtcNow.AddMinutes(-150);
+                var since = DateTime.UtcNow.AddMinutes(-300);
                 var changedPrices = await exactService.GetRecentlyChangedSalesItemPricesAsync(since);
 
                 if (changedPrices == null || changedPrices.Count == 0)

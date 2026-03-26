@@ -368,18 +368,22 @@ builder.Services.AddSingleton<AppConfiguration>();
 
 // Thread-Safe Background Services
 // Stok sync (günlük 09:30)
-builder.Services.AddHostedService<StockSyncBackgroundService>();   
-                //yeni prcice     dursun  bi
- builder.Services.AddHostedService<PriceSyncBackgroundService>();        // Fiyat sync (her 10 dakika, son 15dk değişenler)
+builder.Services.AddHostedService<StockSyncBackgroundService>();
+//yeni prcice     dursun  bi
+builder.Services.AddHostedService<PriceSyncBackgroundService>();        // Fiyat sync (her 10 dakika, son 15dk değişenler)
 //--------------metafieldlara id yazmak içindi
 builder.Services.AddHostedService<ExactProductIdMetafieldSyncService>();
+builder.Services.AddHostedService<ExactCustomerIdMetafieldSyncService>(); // Customer exact_customer_id metafield sync (her gün 05:00)
 //bu eklendi classification kontrolü içim
 //builder.Services.AddHostedService<UpdateExactCustomerJob>();
 //New product var ama ProductPriceAndTitleUpdateService bundan emin değilim açık şimdilik
 builder.Services.AddHostedService<NewProductCreationService>();
 //bunu stok ile birleştireceğim
-// builder.Services.AddHostedService<ProductPriceAndTitleUpdate>(); 
- builder.Services.AddScoped<ProductPriceAndTitleUpdateService>();
+// builder.Services.AddHostedService<ProductPriceAndTitleUpdate>();
+builder.Services.AddScoped<ProductPriceAndTitleUpdateService>();
+
+// Uygulama başlangıcında bir kez tüm Exact ürünlerini Shopify'da toplu fiyat günceller
+builder.Services.AddHostedService<BulkPriceSyncBackgroundService>();
 builder.Services.AddSingleton<ITokenBlacklistService, TokenBlacklistService>();
 
 var app = builder.Build();

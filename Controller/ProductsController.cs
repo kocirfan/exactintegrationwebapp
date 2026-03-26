@@ -99,6 +99,24 @@ namespace ShopifyProductApp.Controllers
             }
         }
 
+        [HttpGet("all-items-summary")]
+        public async Task<IActionResult> GetAllItemsSummary()
+        {
+            try
+            {
+                var items = await _exactService.GetAllItemsSummaryAsync();
+                return Ok(new
+                {
+                    Count = items.Count,
+                    Items = items
+                });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new { Success = false, Error = ex.Message });
+            }
+        }
+
         [HttpGet("shopify-items-graphql")]
         public async Task<IActionResult> GetShopifyItemsGraphql()
         {
@@ -1051,6 +1069,116 @@ namespace ShopifyProductApp.Controllers
 
 
         //bir müşterinin adreslerini getir
+        [HttpGet("sales-item-prices")]
+        public async Task<IActionResult> GetSalesItemPrices([FromQuery] string itemCode)
+        {
+            if (string.IsNullOrWhiteSpace(itemCode))
+                return BadRequest(new { message = "itemCode parametresi gereklidir" });
+
+            var prices = await _exactService.GetSalesItemPricesByItemCodeAsync(itemCode);
+
+            if (prices == null || !prices.Any())
+                return Ok(new { success = true, itemCode, count = 0, prices = new List<object>() });
+
+            var result = prices.Select(p => new
+            {
+                itemCode = p.ItemCode,
+                itemDescription = p.ItemDescription,
+                price = p.Price,
+                currency = p.Currency,
+                unit = p.Unit,
+                unitDescription = p.UnitDescription,
+                quantity = p.Quantity,
+                startDate = p.StartDate?.ToString("yyyy-MM-dd HH:mm:ss"),
+                endDate = p.EndDate?.ToString("yyyy-MM-dd HH:mm:ss"),
+                lastModified = p.Modified?.ToString("yyyy-MM-dd HH:mm:ss"),
+                lastModifiedBy = p.ModifierFullName,
+                created = p.Created?.ToString("yyyy-MM-dd HH:mm:ss"),
+                account = p.Account,
+                accountName = p.AccountName
+            });
+
+            return Ok(new
+            {
+                success = true,
+                itemCode,
+                count = prices.Count,
+                prices = result
+            });
+        }
+
+        [HttpGet("sales-item-price-summary")]
+        public async Task<IActionResult> GetSalesItemPriceSummary([FromQuery] string itemCode)
+        {
+            if (string.IsNullOrWhiteSpace(itemCode))
+                return BadRequest(new { message = "itemCode parametresi gereklidir" });
+
+            var prices = await _exactService.GetSalesItemPricesByItemCodeAsync(itemCode);
+
+            if (prices == null || prices.Count == 0)
+                return Ok(new { success = false, message = "Fiyat kaydı bulunamadı" });
+
+            // Genel liste fiyatı (müşteriye özel olmayan)
+            var generalPrice = prices
+                .Where(p => p.Account == null)
+                .OrderByDescending(p => p.Modified)
+                .FirstOrDefault();
+
+            // Müşteriye özel fiyatlar (aktif olanlar)
+            var now = DateTime.UtcNow;
+            var activeCustomerPrices = prices
+                .Where(p => p.Account != null
+                    && (p.StartDate == null || p.StartDate <= now)
+                    && (p.EndDate == null || p.EndDate >= now))
+                .OrderByDescending(p => p.Modified)
+                .Select(p => new
+                {
+                    accountName = p.AccountName,
+                    price = p.Price,
+                    currency = p.Currency,
+                    startDate = p.StartDate?.ToString("yyyy-MM-dd"),
+                    endDate = p.EndDate?.ToString("yyyy-MM-dd"),
+                    lastModified = p.Modified?.ToString("yyyy-MM-dd HH:mm:ss"),
+                    lastModifiedBy = p.ModifierFullName
+                })
+                .ToList();
+
+            // En son değiştirilen kayıt (tüm kayıtlar içinde)
+            var mostRecentChange = prices.OrderByDescending(p => p.Modified).First();
+
+            return Ok(new
+            {
+                success = true,
+                itemCode,
+                itemDescription = prices.First().ItemDescription,
+                generalListPrice = generalPrice == null ? null : new
+                {
+                    price = generalPrice.Price,
+                    currency = generalPrice.Currency,
+                    lastModified = generalPrice.Modified?.ToString("yyyy-MM-dd HH:mm:ss"),
+                    lastModifiedBy = generalPrice.ModifierFullName,
+                    activeFrom = generalPrice.StartDate?.ToString("yyyy-MM-dd")
+                },
+                mostRecentChange = new
+                {
+                    price = mostRecentChange.Price,
+                    currency = mostRecentChange.Currency,
+                    accountName = mostRecentChange.AccountName ?? "Genel Liste Fiyatı",
+                    lastModified = mostRecentChange.Modified?.ToString("yyyy-MM-dd HH:mm:ss"),
+                    lastModifiedBy = mostRecentChange.ModifierFullName
+                },
+                activeCustomerPriceCount = activeCustomerPrices.Count,
+                activeCustomerPrices
+            });
+        }
+
+        [HttpGet("sales-item-prices-debug")]
+        public async Task<IActionResult> DebugSalesItemPrices([FromQuery] string itemCode)
+        {
+            var rawJson = await _exactService.GetSalesItemPricesRawAsync(itemCode);
+            return Content(rawJson, "application/json");
+        }
+
         [HttpGet("exact-customer-addresses")]
         public async Task<IActionResult> GetCustomerAddresses([FromQuery] string customerId)
         {
