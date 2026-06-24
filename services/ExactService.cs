@@ -975,6 +975,7 @@ public class ExactService
         return null;
     }
 
+//isBundle
     public async Task<bool> GetItemExtraFieldAsync(string itemId)
     {
         var token = await GetValidToken();
@@ -1058,6 +1059,141 @@ public class ExactService
 
                 // ✅ isBundle bulundu ve değeri dolu mu kontrol et
                 if (description.Equals("isBundle", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.IsNullOrEmpty(value))
+                    {
+                        _logger.LogInformation($"✅ isBundle bulundu ve dolu: Value = {value}");
+                        return true;
+                    }
+                    else
+                    {
+                        _logger.LogInformation($"ℹ️ isBundle bulundu ancak boş");
+                        return false;
+                    }
+                }
+                //yeni
+                if (description.Equals("isNoDiscount", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.IsNullOrEmpty(value))
+                    {
+                        _logger.LogInformation($"✅ isBundle bulundu ve dolu: Value = {value}");
+                        return true;
+                    }
+                    else
+                    {
+                        _logger.LogInformation($"ℹ️ isBundle bulundu ancak boş");
+                        return false;
+                    }
+                }
+            }
+
+            _logger.LogWarning($"⚠️ Description = 'isBundle' olan property bulunamadı");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"❌ Beklenemeyen hata: {ex.Message}");
+            return false;
+        }
+    }
+    //isNoDiscount
+     public async Task<bool> GetItemExtraFieldNoDiscountAsync(string itemId)
+    {
+        var token = await GetValidToken();
+        if (token == null)
+        {
+            _logger.LogError("❌ Token alınamadı");
+            return false;
+        }
+
+        using var client = new HttpClient();
+        client.Timeout = TimeSpan.FromMinutes(2);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        try
+        {
+            var url = $"{_baseUrl}/api/v1/{_divisionCode}/read/logistics/ItemExtraField?itemId=guid'{itemId}'";
+
+            _logger.LogInformation($"🔍 Ekstra alanlar aranıyor: ItemID = {itemId}");
+            _logger.LogInformation($"📡 API URL: {url}");
+
+            var response = await client.GetAsync(url);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError($"❌ API Hatası: {response.StatusCode} - {response.ReasonPhrase}");
+                return false;
+            }
+
+            var json = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+
+            if (!doc.RootElement.TryGetProperty("d", out var dataElement))
+            {
+                _logger.LogWarning("⚠️ Beklenmeyen JSON yapısı: 'd' property bulunamadı");
+                return false;
+            }
+
+            JsonElement resultsElement;
+            if (dataElement.ValueKind == JsonValueKind.Object && dataElement.TryGetProperty("results", out var res))
+            {
+                resultsElement = res;
+            }
+            else if (dataElement.ValueKind == JsonValueKind.Array)
+            {
+                resultsElement = dataElement;
+            }
+            else
+            {
+                _logger.LogWarning("⚠️ Beklenmeyen JSON yapısı");
+                return false;
+            }
+
+            // ✅ Boş array kontrolü
+            if (resultsElement.GetArrayLength() == 0)
+            {
+                _logger.LogInformation($"ℹ️ Ekstra alan bulunamadı: ItemID = {itemId}");
+                return false;
+            }
+
+            _logger.LogInformation($"✅ Ekstra alanlar bulundu: ItemID = {itemId}");
+
+            // ✅ Tüm alanları oku ve "Description" = "isBundle" olanını bul
+            for (int i = 0; i < resultsElement.GetArrayLength(); i++)
+            {
+                var item = resultsElement[i];
+                var description = string.Empty;
+                var value = string.Empty;
+
+                foreach (var prop in item.EnumerateObject())
+                {
+                    if (prop.Name == "Description")
+                    {
+                        description = prop.Value.GetString() ?? string.Empty;
+                    }
+                    else if (prop.Name == "Value")
+                    {
+                        value = prop.Value.GetString() ?? string.Empty;
+                    }
+                }
+
+                // ✅ isBundle bulundu ve değeri dolu mu kontrol et
+                // if (description.Equals("isBundle", StringComparison.OrdinalIgnoreCase))
+                // {
+                //     if (!string.IsNullOrEmpty(value))
+                //     {
+                //         _logger.LogInformation($"✅ isBundle bulundu ve dolu: Value = {value}");
+                //         return true;
+                //     }
+                //     else
+                //     {
+                //         _logger.LogInformation($"ℹ️ isBundle bulundu ancak boş");
+                //         return false;
+                //     }
+                // }
+                //yeni
+                if (description.Equals("isNoDiscount", StringComparison.OrdinalIgnoreCase))
                 {
                     if (!string.IsNullOrEmpty(value))
                     {
@@ -1549,6 +1685,139 @@ public class ExactService
     Console.WriteLine($"📊 Maksimum limit: {maxItems}");
 
     return response;
+}
+
+public async Task<List<ExactProduct>> GetRecentlyModifiedWebshopItemsAsync(DateTime since)
+{
+    var results = new List<ExactProduct>();
+
+    var token = await GetValidToken();
+    if (token == null)
+    {
+        _logger.LogError("❌ Token alınamadı");
+        return results;
+    }
+
+    using var client = new HttpClient();
+    client.Timeout = TimeSpan.FromMinutes(5);
+    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+    client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+    var dateFilter = since.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss");
+    int top = 60;
+    int skip = 0;
+    int retryCount = 0;
+    const int maxRetries = 10;
+
+    _logger.LogInformation("🔍 Modified > {Since} olan webshop item'ları aranıyor", dateFilter);
+
+    while (true)
+    {
+        try
+        {
+            var filterQuery = $"IsWebshopItem eq 1 and Modified gt datetime'{dateFilter}'";
+            var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/Items?$filter={Uri.EscapeDataString(filterQuery)}&$top={top}&$skip={skip}&$select=ID,Code,Description,Modified";
+
+            var resp = await client.GetAsync(url);
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests && retryCount < maxRetries)
+                {
+                    retryCount++;
+                    _logger.LogWarning("⏳ Rate limit, {RetryCount}. deneme için 30 saniye bekleniyor...", retryCount);
+                    await Task.Delay(30000);
+                    continue;
+                }
+
+                if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                {
+                    token = await GetValidToken();
+                    if (token == null) break;
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+                    continue;
+                }
+
+                _logger.LogError("❌ API Hatası: {StatusCode}", resp.StatusCode);
+                break;
+            }
+
+            retryCount = 0;
+            var json = await resp.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+
+            if (!doc.RootElement.TryGetProperty("d", out var dataElement)) break;
+
+            JsonElement resultsElement;
+            if (dataElement.ValueKind == JsonValueKind.Object && dataElement.TryGetProperty("results", out var res))
+                resultsElement = res;
+            else if (dataElement.ValueKind == JsonValueKind.Array)
+                resultsElement = dataElement;
+            else
+                break;
+
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            int countInPage = 0;
+
+            foreach (var item in resultsElement.EnumerateArray())
+            {
+                var product = JsonSerializer.Deserialize<ExactProduct>(item.GetRawText(), options);
+                if (product != null)
+                {
+                    results.Add(product);
+                    countInPage++;
+                }
+            }
+
+            if (countInPage < top) break;
+            skip += top;
+            await Task.Delay(200);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ GetRecentlyModifiedWebshopItemsAsync hata");
+            break;
+        }
+    }
+
+    _logger.LogInformation("✅ {Count} modified webshop item bulundu (since: {Since})", results.Count, dateFilter);
+    return results;
+}
+
+public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
+{
+    var token = await GetValidToken();
+    if (token == null) return null;
+
+    using var client = new HttpClient();
+    client.DefaultRequestHeaders.Authorization =
+        new AuthenticationHeaderValue("Bearer", token.access_token);
+    client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+    var url = $"{_baseUrl}/api/v1/system/Users";
+
+    var response = await client.GetAsync(url);
+    if (!response.IsSuccessStatusCode)
+    {
+        var errorBody = await response.Content.ReadAsStringAsync();
+        _logger.LogWarning($"GetUsersAsync HTTP hatası: {response.StatusCode} - {errorBody}");
+        throw new Exception($"Exact API hatası: {response.StatusCode} - {errorBody}");
+    }
+
+    var json = await response.Content.ReadAsStringAsync();
+    using var doc = JsonDocument.Parse(json);
+
+    var users = new List<Dictionary<string, object>>();
+    var items = doc.RootElement.GetProperty("d").GetProperty("results");
+    foreach (var item in items.EnumerateArray())
+    {
+        var dict = new Dictionary<string, object>();
+        foreach (var prop in item.EnumerateObject())
+            dict[prop.Name] = prop.Value.ToString();
+        users.Add(dict);
+    }
+
+    return users;
 }
 
 
@@ -2260,7 +2529,7 @@ public class ExactService
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         var sinceStr = since.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss");
-        var filter = $"Modified gt datetime'{sinceStr}'";
+        var filter = $"Modified gt datetime'{sinceStr}' and Account eq null";
         var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/SalesItemPrices?$filter={Uri.EscapeDataString(filter)}&$select=Item,ItemCode,Price,Modified";
 
         Console.WriteLine($"📡 SalesItemPrices sorgulanıyor: {url}");
@@ -2821,7 +3090,7 @@ public class ExactService
         {
             // Önce müşteriyi email ile ara
             var email = customer.Email?.Replace("'", "''");
-            var searchUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Email eq '{email}'&$select=ID,Name,Email";
+            var searchUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Email eq '{email}' and Status eq 'C'&$select=ID,Name,Email,Status";
 
             Console.WriteLine($"🔍 Müşteri aranıyor: {email}");
 
@@ -2842,17 +3111,13 @@ public class ExactService
                     if (existingCustomer.TryGetProperty("ID", out var idProp))
                     {
                         var customerId = Guid.Parse(idProp.GetString());
-                        var testUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts(guid'{customerId}')?$select=ID,Name,Email,Type,Status";
-                        var testResponse = await client.GetAsync(testUrl);
-                        var testContent = await testResponse.Content.ReadAsStringAsync();
-                        Console.WriteLine($"🔍 Müşteri Detayları: {testContent}");
 
                         // Sadece Status "C" olan müşteriler kabul edilecek
                         var statusValue = existingCustomer.TryGetProperty("Status", out var statusProp) ? statusProp.GetString() : null;
-                        if (statusValue != null && statusValue != "C")
+                        if (statusValue != "C")
                         {
-                            Console.WriteLine($"⏭️ Mevcut müşteri Status={statusValue}, 'C' değil - atlanıyor: {customerId}");
-                            _logger.LogInformation("Mevcut müşteri Status={Status}, 'C' değil - Exact'a yazılmadı: {Email}", statusValue, email);
+                            Console.WriteLine($"⏭️ Mevcut müşteri Status={statusValue}, 'C' değil - sipariş oluşturulmadı: {customerId}");
+                            _logger.LogWarning("⚠️ Müşteri Status={Status} olduğu için sipariş oluşturulmadı: {Email}", statusValue, email);
                             return null;
                         }
 
@@ -3197,9 +3462,8 @@ public class ExactService
             }
             else
             {
-                var errorContent = await response.Content.ReadAsStringAsync();
-                _logger.LogError($"❌ ExactOnline sipariş oluşturma hatası: {errorContent}");
-                Console.WriteLine($"❌ Hata detayı: {errorContent}");
+                _logger.LogError($"❌ ExactOnline sipariş oluşturma hatası: {responseBody}");
+                Console.WriteLine($"❌ Hata detayı: {responseBody}");
                 return (false, null, null);
             }
         }
@@ -3211,6 +3475,28 @@ public class ExactService
         }
     }
 
+
+    public async Task<Guid?> GetAccountManagerByCustomerIdAsync(Guid customerId)
+    {
+        var token = await GetValidToken();
+        if (token == null) return null;
+
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts(guid'{customerId}')?$select=ID,AccountManager";
+        var response = await client.GetAsync(url);
+        if (!response.IsSuccessStatusCode) return null;
+
+        var content = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(content);
+        if (!doc.RootElement.TryGetProperty("d", out var d)) return null;
+        if (!d.TryGetProperty("AccountManager", out var am)) return null;
+        if (am.ValueKind == JsonValueKind.String && Guid.TryParse(am.GetString(), out var amGuid))
+            return amGuid;
+        return null;
+    }
 
     //son 24 saatte eklenen müşteriler
     public async Task<List<string>> GetRecentCustomerEmailsAsync(int hours = 24)
@@ -4093,7 +4379,7 @@ public class ExactService
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-        var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Status eq 'C'&$top={top}&$skip={skip}&$select=ID,Email,Name";
+        var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Status eq 'C'&$top={top}&$skip={skip}&$select=ID,Email,Name,Classification1";
 
         int retryCount = 0;
         const int maxRetries = 3;
@@ -4155,6 +4441,33 @@ public class ExactService
                             _ => prop.Value.ToString() ?? string.Empty
                         };
                     }
+
+                    // Classification1 GUID'i varsa AccountClassifications'tan Code'u çek
+                    var classification1 = dict.ContainsKey("Classification1") ? dict["Classification1"]?.ToString() : null;
+                    if (!string.IsNullOrWhiteSpace(classification1))
+                    {
+                        try
+                        {
+                            var classUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/AccountClassifications?$filter=ID eq guid'{classification1}'&$select=Code";
+                            var classResp = await client.GetAsync(classUrl);
+                            if (classResp.IsSuccessStatusCode)
+                            {
+                                var classJson = await classResp.Content.ReadAsStringAsync();
+                                using var classDoc = JsonDocument.Parse(classJson);
+                                if (classDoc.RootElement.TryGetProperty("d", out var cd) &&
+                                    cd.TryGetProperty("results", out var cr) &&
+                                    cr.GetArrayLength() > 0)
+                                {
+                                    dict["ClassificationDescription"] = cr[0].GetProperty("Code").GetString() ?? string.Empty;
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // Classification çekilemezse devam et
+                        }
+                    }
+
                     items.Add(dict);
                 }
 

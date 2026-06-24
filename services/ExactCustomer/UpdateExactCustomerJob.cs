@@ -52,7 +52,7 @@ namespace ShopifyProductApp.Services
                     _logger.LogError(ex, "Customer sync service hatası: {Error}", ex.Message);
                 }
 
-                await Task.Delay(TimeSpan.FromMinutes(60), stoppingToken);
+                await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
             }
         }
 

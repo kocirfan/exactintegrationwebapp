@@ -441,12 +441,25 @@ namespace ShopifyProductApp.Controllers
                 double currentTotalTax = double.TryParse(shopifyOrder.current_total_tax?.Replace(".", ",") ?? "0", out var ctt) ? ctt : 0d;
 
                 // Salesperson
-                Guid? salespersonGuid = null;
-                var salespersonConfig = _configuration["ExactOnline:DefaultSalesperson"];
+            //"DefaultSalesperson": "5acbab56-ef3d-47d4-873e-f494dcfe1426"
+            Guid? salespersonGuid = null;
+            var salespersonConfig = _configuration["ExactOnline:DefaultSalesperson"];
+            var accountManager1 = await _exactService.GetAccountManagerByCustomerIdAsync(customerId.Value);
+            if (accountManager1 == null)
+            {
                 if (!string.IsNullOrEmpty(salespersonConfig) && Guid.TryParse(salespersonConfig, out var sp))
                 {
                     salespersonGuid = sp;
                 }
+                else
+                {
+                    salespersonGuid = new Guid("5acbab56-ef3d-47d4-873e-f494dcfe1426");
+                }
+            }
+            else
+            {
+                salespersonGuid = accountManager1.Value;
+            }
 
                 // Warehouse
                 Guid? warehouseGuid = null;
@@ -670,8 +683,9 @@ namespace ShopifyProductApp.Controllers
                     Division = 553201,
                     WarehouseID = warehouseGuid,
                     SalesOrderLines = salesOrderLines,
-                    ShippingMethod = shippingMethodGuid,
+                    // ShippingMethod = shippingMethodGuid,
                     YourRef = referenceNumber,
+                    Salesperson = salespersonGuid,
 
                     // Amount değerlerini Exact hesaplasın
                     AmountDC = currentSubtotalPrice - currentTotalTax,  // KDV hariç
@@ -694,6 +708,37 @@ namespace ShopifyProductApp.Controllers
 
                 // 4. ExactOnline'a gönder
                 var (success, exactOrderId, exactOrderNumber) = await _exactService.CreateSalesOrderAsync(exactOrder);
+
+                // Salesperson hatası varsa müşterinin AccountManager'ını kullanarak tekrar dene
+                if (!success && exactOrder.Salesperson.HasValue)
+            {
+                _logger.LogWarning("⚠️ Sipariş oluşturulamadı (muhtemelen Salesperson hatası). Müşterinin AccountManager'ı deneniyor...");
+                var accountManager = await _exactService.GetAccountManagerByCustomerIdAsync(customerId.Value);
+                if (accountManager.HasValue)
+                {
+                    _logger.LogInformation("🔄 AccountManager bulundu: {AccountManager}, sipariş tekrar gönderiliyor...", accountManager.Value);
+                    exactOrder.Salesperson = accountManager.Value;
+                    (success, exactOrderId, exactOrderNumber) = await _exactService.CreateSalesOrderAsync(exactOrder);
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ AccountManager bulunamadı, fallback Salesperson ile tekrar deneniyor...");
+                    exactOrder.Salesperson = new Guid("5acbab56-ef3d-47d4-873e-f494dcfe1426");
+                    (success, exactOrderId, exactOrderNumber) = await _exactService.CreateSalesOrderAsync(exactOrder);
+                    if (!success)
+                        _logger.LogError("❌ Fallback Salesperson ile de sipariş oluşturulamadı. Müşteri ID: {CustomerId}", customerId.Value);
+                }
+
+                if (accountManager.HasValue && !success)
+                {
+                    _logger.LogWarning("⚠️ AccountManager ({AccountManager}) de geçersiz, fallback Salesperson ile son deneme yapılıyor...", accountManager.Value);
+                    exactOrder.Salesperson = new Guid("5acbab56-ef3d-47d4-873e-f494dcfe1426");
+                    (success, exactOrderId, exactOrderNumber) = await _exactService.CreateSalesOrderAsync(exactOrder);
+                    if (!success)
+                        _logger.LogError("❌ Fallback Salesperson ile de sipariş oluşturulamadı. Müşteri ID: {CustomerId}", customerId.Value);
+                }
+            }
+
                 return (success, exactOrderId, exactOrderNumber);
             }
             catch (Exception ex)

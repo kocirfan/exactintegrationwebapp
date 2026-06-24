@@ -990,6 +990,8 @@ namespace ShopifyProductApp.Controllers
 
             return Ok(item);
         }
+
+        //nodiscount test
         [HttpGet("get-item-by-new-code")]
         public async Task<IActionResult> GetItemNewByCode([FromQuery] string code)
         {
@@ -998,24 +1000,25 @@ namespace ShopifyProductApp.Controllers
                 return BadRequest("Code parametresi gereklidir");
             }
 
-            var item = await _exactProductCrud.GetItemByCodeAsync(code);
-            if (item?.Success == true && item.Results.Count > 0)
-            {
-                var product = item.Results[0];
-                var logFile = Path.Combine("logs", $"shopify-product-create-{DateTime.Now:yyyyMMdd}.log");
-                var success = await _shopifyService.CreateProductAsync(product, logFile);
-                if(success)
-                {
-                    Console.WriteLine("Shopify ürün oluşturuldu.");
-                }
-                else
-                {
-                    Console.WriteLine("Shopify ürün oluşturulamadı.");
+            var item = await _exactProductCrud.GetItemByCodeNoDiscountAsync(code);
+            return Ok(item.Results[0]);
+            // if (item?.Success == true && item.Results.Count > 0)
+            // {
+            //     var product = item.Results[0];
+            //     var logFile = Path.Combine("logs", $"shopify-product-create-{DateTime.Now:yyyyMMdd}.log");
+            //     var success = await _shopifyService.CreateProductAsync(product, logFile);
+            //     if(success)
+            //     {
+            //         Console.WriteLine("Shopify ürün oluşturuldu.");
+            //     }
+            //     else
+            //     {
+            //         Console.WriteLine("Shopify ürün oluşturulamadı.");
 
-                }
-                return Ok(item.Results[0]);
-            }
-            return Ok("Ürün bulunamadı");
+            //     }
+            //     return Ok(item.Results[0]);
+            // }
+            //return Ok("Ürün bulunamadı");
         }
 
         [HttpGet("exact-recent-orders")]

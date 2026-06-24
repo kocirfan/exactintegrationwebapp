@@ -397,9 +397,7 @@ namespace ExactOnline.Models
         public string UniqueTaxpayerReference { get; set; }
         
         // Account Manager
-        [JsonIgnore]
         public Guid? AccountManager { get; set; }
-        [JsonIgnore]
         public string AccountManagerFullName { get; set; }
         [JsonIgnore]
         public int? AccountManagerHID { get; set; }

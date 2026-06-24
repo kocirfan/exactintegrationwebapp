@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Newtonsoft.Json;
+using System.Text.Json.Serialization;
 
 public class ExactOrder
 {
@@ -32,7 +33,9 @@ public class ExactOrder
     // Nullable yapıldı
     public Guid? WarehouseID { get; set; }
     
-    // Nullable yapıldı - eğer config'de yoksa null olacak
+    // Nullable yapıldı - eğer config'de yoksa null olacak; null ise JSON'a dahil etme
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    [System.Text.Json.Serialization.JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Guid? Salesperson { get; set; }
     
     public List<ExactOrderLine> SalesOrderLines { get; set; }

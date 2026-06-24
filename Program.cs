@@ -370,14 +370,17 @@ builder.Services.AddSingleton<AppConfiguration>();
 // Stok sync (günlük 09:30)
 builder.Services.AddHostedService<StockSyncBackgroundService>();
 //yeni prcice     dursun  bi
-builder.Services.AddHostedService<PriceSyncBackgroundService>();        // Fiyat sync (her 10 dakika, son 15dk değişenler)
+//builder.Services.AddHostedService<PriceSyncBackgroundService>();        // Fiyat sync (her 10 dakika, son 15dk değişenler)
 //--------------metafieldlara id yazmak içindi
 builder.Services.AddHostedService<ExactProductIdMetafieldSyncService>();
-builder.Services.AddHostedService<ExactCustomerIdMetafieldSyncService>(); // Customer exact_customer_id metafield sync (her gün 05:00)
+//--> canlıda bunları çalıştır iki alttaki
+//builder.Services.AddHostedService<ExactCustomerIdMetafieldSyncService>(); // Customer exact_customer_id metafield sync (her gün 05:00)
+builder.Services.AddHostedService<ExactDiscountCodeSyncService>(); // Customer exact_discount_code metafield sync (başlangıçta çalışır)
 //bu eklendi classification kontrolü içim
-//builder.Services.AddHostedService<UpdateExactCustomerJob>();
+builder.Services.AddHostedService<UpdateExactCustomerJob>();
 //New product var ama ProductPriceAndTitleUpdateService bundan emin değilim açık şimdilik
 builder.Services.AddHostedService<NewProductCreationService>();
+builder.Services.AddHostedService<NoDiscountTagSyncService>(); // Son 10dk'da modified webshop ürünlerin isNoDiscount tag'ını senkronize eder
 //bunu stok ile birleştireceğim
 // builder.Services.AddHostedService<ProductPriceAndTitleUpdate>();
 builder.Services.AddScoped<ProductPriceAndTitleUpdateService>();
@@ -459,6 +462,7 @@ using (var scope = app.Services.CreateScope())
 
 
 
+
 // Configure the HTTP request pipeline
 app.UseRouting();
 app.UseCors("AllowAll");
@@ -495,6 +499,171 @@ app.Use(async (context, next) =>
 });
 
 app.MapControllers();
+
+// Dashboard - log dosyalarını okuyarak durum gösterir, mevcut servislere dokunmaz
+app.MapGet("/dashboard/status", async (IWebHostEnvironment env) =>
+{
+    var dataPath = Path.Combine(Directory.GetCurrentDirectory(), "Data");
+
+    static (string timestamp, string status, int count) ReadLastEntry(string filePath)
+    {
+        try
+        {
+            if (!File.Exists(filePath)) return ("-", "Dosya yok", 0);
+            var text = File.ReadAllText(filePath);
+            if (string.IsNullOrWhiteSpace(text)) return ("-", "Boş", 0);
+            using var doc = System.Text.Json.JsonDocument.Parse(text);
+            System.Text.Json.JsonElement last;
+            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                var arr = doc.RootElement;
+                if (arr.GetArrayLength() == 0) return ("-", "Kayıt yok", 0);
+                last = arr[arr.GetArrayLength() - 1];
+            }
+            else
+            {
+                last = doc.RootElement;
+            }
+            var ts = last.TryGetProperty("Timestamp", out var t) ? t.GetString() :
+                     last.TryGetProperty("timestamp", out var t2) ? t2.GetString() : "-";
+            var st = last.TryGetProperty("Status", out var s) ? s.GetString() :
+                     last.TryGetProperty("status", out var s2) ? s2.GetString() : "-";
+            var cnt = last.TryGetProperty("UpdatedCount", out var c) ? c.GetInt32() : 0;
+            return (ts ?? "-", st ?? "-", cnt);
+        }
+        catch { return ("-", "Okunamadı", 0); }
+    }
+
+    static string FileSize(string filePath)
+    {
+        try { return File.Exists(filePath) ? $"{new FileInfo(filePath).Length / 1024.0:F1} KB" : "-"; }
+        catch { return "-"; }
+    }
+
+    var services = new[]
+    {
+        new { Ad = "Price Sync", Dosya = "price_sync_log.json" },
+        new { Ad = "Webhook Update", Dosya = "webhook_update.json" },
+        new { Ad = "Background Process", Dosya = "background_process_log.json" },
+        new { Ad = "Stock Sync", Dosya = "daily_stock_sync.json" },
+        new { Ad = "New Products", Dosya = "newproducts.json" },
+        new { Ad = "Webhook Logs", Dosya = "webhook_logs.json" },
+        new { Ad = "Item Changes", Dosya = "item_changes.json" },
+    };
+
+    var rows = services.Select(s =>
+    {
+        var path = Path.Combine(dataPath, s.Dosya);
+        var (ts, st, cnt) = ReadLastEntry(path);
+        var size = FileSize(path);
+        return new { s.Ad, s.Dosya, Timestamp = ts, Status = st, Count = cnt, Size = size };
+    });
+
+    return Results.Json(rows);
+}).AllowAnonymous();
+
+app.MapGet("/dashboard", () =>
+{
+    var html = """
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Servis Durumu</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; padding: 2rem; }
+  h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.25rem; }
+  .subtitle { color: #64748b; font-size: 0.85rem; margin-bottom: 2rem; }
+  .subtitle span { color: #38bdf8; }
+  table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 12px; overflow: hidden; }
+  thead { background: #0f172a; }
+  th { padding: 0.85rem 1.25rem; text-align: left; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; }
+  td { padding: 0.85rem 1.25rem; font-size: 0.85rem; border-top: 1px solid #0f172a; }
+  tr:hover td { background: #263347; }
+  .ts { color: #94a3b8; font-size: 0.78rem; }
+  .status { max-width: 340px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #cbd5e1; }
+  .badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 9999px; font-size: 0.72rem; font-weight: 600; }
+  .ok { background: #052e16; color: #4ade80; }
+  .warn { background: #451a03; color: #fb923c; }
+  .err { background: #450a0a; color: #f87171; }
+  .count { color: #38bdf8; font-weight: 600; }
+  .size { color: #475569; font-size: 0.78rem; }
+  .refresh { color: #64748b; font-size: 0.78rem; margin-top: 1.25rem; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #4ade80; animation: pulse 2s infinite; margin-right: 6px; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+</style>
+</head>
+<body>
+<h1>Servis Durumu</h1>
+<p class="subtitle">Son log kayıtlarına göre &mdash; <span id="refreshin">10</span>s sonra yenilenir &nbsp;<span class="dot"></span></p>
+<table>
+  <thead>
+    <tr>
+      <th>Servis</th>
+      <th>Son Çalışma</th>
+      <th>Durum</th>
+      <th>Güncellenen</th>
+      <th>Dosya</th>
+    </tr>
+  </thead>
+  <tbody id="tbody">
+    <tr><td colspan="5" style="color:#475569;padding:2rem">Yükleniyor...</td></tr>
+  </tbody>
+</table>
+<p class="refresh" id="lastfetch"></p>
+
+<script>
+function relativeTime(isoStr) {
+  if (!isoStr || isoStr === '-') return '-';
+  const diff = (Date.now() - new Date(isoStr).getTime()) / 1000;
+  if (diff < 60) return Math.round(diff) + 's önce';
+  if (diff < 3600) return Math.round(diff/60) + 'dk önce';
+  if (diff < 86400) return Math.round(diff/3600) + 'sa önce';
+  return Math.round(diff/86400) + 'g önce';
+}
+
+function badge(status) {
+  if (!status || status === '-' || status === 'Dosya yok' || status === 'Boş' || status === 'Kayıt yok')
+    return `<span class="badge warn">${status || '-'}</span>`;
+  if (status.toLowerCase().includes('hata') || status.toLowerCase().includes('error') || status === 'Okunamadı')
+    return `<span class="badge err">${status}</span>`;
+  return `<span class="badge ok">✓</span>`;
+}
+
+async function load() {
+  try {
+    const r = await fetch('/dashboard/status');
+    const data = await r.json();
+    const tbody = document.getElementById('tbody');
+    tbody.innerHTML = data.map(s => `
+      <tr>
+        <td><strong>${s.ad}</strong></td>
+        <td class="ts" title="${s.timestamp}">${relativeTime(s.timestamp)}</td>
+        <td class="status" title="${s.status}">${badge(s.status)} ${s.status !== '-' ? s.status.substring(0,60) + (s.status.length>60?'…':'') : ''}</td>
+        <td class="count">${s.count > 0 ? s.count : '-'}</td>
+        <td class="size">${s.dosya}<br><small>${s.size}</small></td>
+      </tr>`).join('');
+    document.getElementById('lastfetch').textContent = 'Son güncelleme: ' + new Date().toLocaleTimeString('tr-TR');
+  } catch(e) {
+    document.getElementById('tbody').innerHTML = `<tr><td colspan="5" style="color:#f87171">Yüklenemedi: ${e.message}</td></tr>`;
+  }
+}
+
+load();
+let countdown = 10;
+setInterval(() => {
+  countdown--;
+  document.getElementById('refreshin').textContent = countdown;
+  if (countdown <= 0) { countdown = 10; load(); }
+}, 1000);
+</script>
+</body>
+</html>
+""";
+    return Results.Content(html, "text/html");
+}).AllowAnonymous();
 
 // Data klasörünü configuration'dan oku ve oluştur
 var fullDataPath = Path.Combine(Directory.GetCurrentDirectory(), dataDirectory);

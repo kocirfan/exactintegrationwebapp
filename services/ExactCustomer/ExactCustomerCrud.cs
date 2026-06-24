@@ -267,6 +267,85 @@ public class ExactCustomerCrud
         }
     }
 
+    public async Task<Account> GetCustomerByEmailAsync(string email)
+    {
+        var exactService = _serviceProvider.GetRequiredService<ExactService>();
+        var token = await exactService.GetValidToken();
+
+        if (token == null)
+        {
+            _logger.LogError("Token alınamadı");
+            return null;
+        }
+
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var jsonOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            PropertyNamingPolicy = null,
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never,
+            ReadCommentHandling = JsonCommentHandling.Skip,
+            AllowTrailingCommas = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+        };
+
+        var encodedEmail = Uri.EscapeDataString(email);
+        var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Email eq '{encodedEmail}'&$top=1";
+        var response = await client.GetAsync(url);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogError($"API hatası: {response.StatusCode}");
+            return null;
+        }
+
+        var content = await response.Content.ReadAsStringAsync();
+        content = PreProcessJson(content);
+
+        using var doc = JsonDocument.Parse(content);
+
+        if (!doc.RootElement.TryGetProperty("d", out var dElement))
+            return null;
+
+        JsonElement resultsArray;
+        if (dElement.ValueKind == JsonValueKind.Array)
+            resultsArray = dElement;
+        else if (dElement.TryGetProperty("results", out var resultsProperty))
+            resultsArray = resultsProperty;
+        else
+            return null;
+
+        var first = resultsArray.EnumerateArray().FirstOrDefault();
+        if (first.ValueKind == JsonValueKind.Undefined)
+            return null;
+
+        var customerJson = PreProcessJson(first.GetRawText());
+        var account = JsonSerializer.Deserialize<Account>(customerJson, jsonOptions);
+
+        if (account != null && account.Classification1 != null)
+        {
+            var classificationUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/AccountClassifications?$filter=ID eq guid'{account.Classification1}'";
+            var classResponse = await client.GetAsync(classificationUrl);
+            if (classResponse.IsSuccessStatusCode)
+            {
+                var classContent = await classResponse.Content.ReadAsStringAsync();
+                var classDoc = JsonDocument.Parse(classContent);
+                if (classDoc.RootElement.TryGetProperty("d", out var cd) &&
+                    cd.TryGetProperty("results", out var cr) &&
+                    cr.GetArrayLength() > 0)
+                {
+                    account.ClassificationDescription = cr[0].GetProperty("Code").GetString();
+                }
+            }
+        }
+
+        return account;
+    }
+
     private string PreProcessJson(string json)
     {
         // Source field'ı: sayı ise string'e çevir

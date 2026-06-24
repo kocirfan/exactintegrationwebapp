@@ -753,6 +753,7 @@ namespace ShopifyProductApp.Controllers
                     if (action == "Update")
                     {
                         bool isBundle = await _exactService.GetItemExtraFieldAsync(productId.ToString());
+                        bool isNoDiscount = await _exactService.GetItemExtraFieldNoDiscountAsync(productId.ToString());
                         if(isBundle)
                         {
                            _logger.LogInformation("🛒 Shopify sadece isim ve fiyat: {Code}", code);
@@ -764,6 +765,8 @@ namespace ShopifyProductApp.Controllers
                             await shopifyService.UpdateProductTitleAndPriceBySkuAndSaveRawAsync(productId, code, description, price, _updateLogFile);
                             await shopifyService.ActiveOrPassif(code, isWebshopItem);
                         }
+                        _logger.LogInformation("🏷️ nodiscount tag senkronize ediliyor: {Code} isNoDiscount={IsNoDiscount}", code, isNoDiscount);
+                        await shopifyService.SyncNoDiscountTagBySkuAsync(productId, code, isNoDiscount);
                         
                         
                     }

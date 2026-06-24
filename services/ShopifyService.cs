@@ -2518,9 +2518,21 @@ public class ShopifyService
                         UpdatedProducts = new List<string>(),
                         ProcessType = "BackgroundService"
                     };
-                    // Log dosyasına yaz ve çık
-                    await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(logEntry, _jsonOptions));
-                    Console.WriteLine($"📝 İşlem logu {filePath} dosyasına yazıldı.");
+                    // Log dosyasına ekle (append) ve çık
+                    List<object> logListNotFound;
+                    if (File.Exists(filePath))
+                    {
+                        try
+                        {
+                            var existing = await File.ReadAllTextAsync(filePath);
+                            logListNotFound = JsonSerializer.Deserialize<List<object>>(existing) ?? new List<object>();
+                        }
+                        catch { logListNotFound = new List<object>(); }
+                    }
+                    else { logListNotFound = new List<object>(); }
+                    logListNotFound.Add(logEntry);
+                    await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(logListNotFound, _jsonOptions));
+                    Console.WriteLine($"📝 İşlem logu {filePath} dosyasına yazıldı. (Toplam {logListNotFound.Count} kayıt)");
                     return;
                 }
 
@@ -2656,11 +2668,123 @@ public class ShopifyService
                 ProcessType = "BackgroundService"
             };
         }
-        // Log dosyasına yaz
-        await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(logEntry, _jsonOptions));
-        Console.WriteLine($"📝 İşlem logu {filePath} dosyasına yazıldı.");
+        // Log dosyasına ekle (append) — geçmiş kayıtlar silinmez
+        List<object> logList;
+        if (File.Exists(filePath))
+        {
+            try
+            {
+                var existing = await File.ReadAllTextAsync(filePath);
+                logList = JsonSerializer.Deserialize<List<object>>(existing) ?? new List<object>();
+            }
+            catch
+            {
+                logList = new List<object>();
+            }
+        }
+        else
+        {
+            logList = new List<object>();
+        }
+        logList.Add(logEntry);
+        await File.WriteAllTextAsync(filePath, JsonSerializer.Serialize(logList, _jsonOptions));
+        Console.WriteLine($"📝 İşlem logu {filePath} dosyasına yazıldı. (Toplam {logList.Count} kayıt)");
     }
 
+
+    //NoDiscount Etiketi
+    public async Task SyncNoDiscountTagBySkuAsync(Guid productId, string sku, bool isNoDiscount)
+    {
+        try
+        {
+            var searchResult = await GetProductBySkuWithDuplicateHandlingAsync(sku);
+
+            if (!searchResult.Found)
+            {
+                Console.WriteLine($"SKU '{sku}' bulunamadı, ExactProductId '{productId}' ile aranıyor...");
+                searchResult = await GetProductByExactProductIdAsync(productId);
+
+                if (!searchResult.Found)
+                {
+                    Console.WriteLine($"ExactProductId '{productId}' ile de ürün bulunamadı: {searchResult.Reason}");
+                    return;
+                }
+
+                Console.WriteLine($"✅ ExactProductId '{productId}' ile ürün bulundu: {searchResult.Match?.ProductTitle}");
+            }
+
+            var allMatches = searchResult.AllMatches ?? [searchResult.Match];
+
+            foreach (var product in allMatches)
+            {
+                try
+                {
+                    var productIdToUpdate = product.ProductId.Replace("gid://shopify/Product/", "");
+
+                    // Mevcut tag'ları oku
+                    var getResponse = await _client.GetAsync($"products/{productIdToUpdate}.json?fields=id,tags");
+                    getResponse.EnsureSuccessStatusCode();
+                    var getJson = await getResponse.Content.ReadAsStringAsync();
+                    using var doc = JsonDocument.Parse(getJson);
+                    var existingTags = doc.RootElement
+                        .GetProperty("product")
+                        .GetProperty("tags")
+                        .GetString() ?? "";
+
+                    var tagList = existingTags
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .ToList();
+
+                    bool hasTag = tagList.Any(t => t.Equals("nodiscount", StringComparison.OrdinalIgnoreCase));
+
+                    if (isNoDiscount && hasTag)
+                    {
+                        Console.WriteLine($"ℹ️ '{product.ProductTitle}' zaten 'nodiscount' tag'ına sahip, atlanıyor.");
+                        continue;
+                    }
+
+                    if (!isNoDiscount && !hasTag)
+                    {
+                        Console.WriteLine($"ℹ️ '{product.ProductTitle}' zaten 'nodiscount' tag'ı yok, atlanıyor.");
+                        continue;
+                    }
+
+                    if (isNoDiscount)
+                        tagList.Add("nodiscount");
+                    else
+                        tagList.RemoveAll(t => t.Equals("nodiscount", StringComparison.OrdinalIgnoreCase));
+
+                    var newTags = string.Join(", ", tagList);
+
+                    var payload = new
+                    {
+                        product = new
+                        {
+                            id = productIdToUpdate,
+                            tags = newTags
+                        }
+                    };
+
+                    var jsonContent = new StringContent(JsonSerializer.Serialize(payload));
+                    jsonContent.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+                    var response = await _client.PutAsync($"products/{productIdToUpdate}.json", jsonContent);
+                    response.EnsureSuccessStatusCode();
+
+                    var action = isNoDiscount ? "eklendi" : "silindi";
+                    Console.WriteLine($"✅ '{product.ProductTitle}' ürününde 'nodiscount' tag'ı {action}. Yeni tag'lar: {newTags}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"❌ '{product.ProductTitle}' tag güncellenirken hata: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ SyncNoDiscountTagBySkuAsync genel hata (SKU: {sku}): {ex.Message}");
+        }
+    }
 
     public async Task<List<ProcessResult>> UpdateProductStatusBySkuListAndSaveRawAsync(List<string> skuList, string filePath)
     {
@@ -3640,6 +3764,80 @@ mutation customerUpdate($input: CustomerInput!) {
         catch (Exception ex)
         {
             Console.WriteLine($"❌ UpdateCustomerExactIdMetafieldAsync hatası: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Shopify customer'ının custom.exact_discount_code metafield'ını GraphQL ile günceller.
+    /// </summary>
+    public async Task<bool> UpdateCustomerDiscountCodeMetafieldAsync(string shopifyCustomerId, string discountCode)
+    {
+        try
+        {
+            var gid = shopifyCustomerId.StartsWith("gid://") ? shopifyCustomerId : $"gid://shopify/Customer/{shopifyCustomerId}";
+
+            var mutation = @"
+mutation customerUpdate($input: CustomerInput!) {
+  customerUpdate(input: $input) {
+    customer {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}";
+
+            var variables = new
+            {
+                input = new
+                {
+                    id = gid,
+                    metafields = new[]
+                    {
+                        new
+                        {
+                            @namespace = "custom",
+                            key = "exact_discount_code",
+                            value = discountCode ?? "",
+                            type = "single_line_text_field"
+                        }
+                    }
+                }
+            };
+
+            var payload = new { query = mutation, variables };
+            var jsonContent = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+
+            var response = await _client.PostAsync("graphql.json", jsonContent);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"❌ Customer discount code metafield GraphQL isteği başarısız: {response.StatusCode}");
+                return false;
+            }
+
+            var responseBody = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(responseBody);
+
+            if (doc.RootElement.TryGetProperty("data", out var data) &&
+                data.TryGetProperty("customerUpdate", out var customerUpdate) &&
+                customerUpdate.TryGetProperty("userErrors", out var userErrors) &&
+                userErrors.GetArrayLength() > 0)
+            {
+                var firstError = userErrors[0];
+                var errMsg = firstError.TryGetProperty("message", out var msg) ? msg.GetString() : "Bilinmeyen hata";
+                Console.WriteLine($"❌ Shopify customer discount code metafield userError: {errMsg}");
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ UpdateCustomerDiscountCodeMetafieldAsync hatası: {ex.Message}");
             return false;
         }
     }

@@ -103,6 +103,12 @@ public class ShopifyCustomerCrud
                         value = exactAccount.ID.ToString(),
                         type = "single_line_text_field"
                     },
+                    new{
+                        @namespace = "custom",
+                        key = "exact_discount_code",
+                        value = exactAccount.ClassificationDescription,
+                        type = "single_line_text_field"
+                    },
                     new
                     {
                         @namespace = "custom",
@@ -180,6 +186,12 @@ public class ShopifyCustomerCrud
                                 value = exactAccount.Code?.Trim() ?? "",
                                 type = "single_line_text_field"
                             },
+                            new{
+                        @namespace = "custom",
+                        key = "exact_discount_code",
+                        value = exactAccount.ClassificationDescription,
+                        type = "single_line_text_field"
+                    },
                             new
                             {
                                 @namespace = "custom",
