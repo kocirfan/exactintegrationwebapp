@@ -676,6 +676,149 @@ if (!Directory.Exists(fullDataPath))
 Console.WriteLine("🚀 Uygulama başlatıldı");
 Console.WriteLine($"📁 Data Directory: {dataDirectory}");
 
+// 🏷️ TEK SEFERLİK: Tüm Shopify müşterilerine "corporate" tag'i ekler. (ŞU AN DEVRE DIŞI - yoruma alındı)
+// Başarıyla tamamlanınca Data/corporate_tag_migration_done.json oluşturur, sonraki açılışlarda çalışmaz.
+// Tekrar çalıştırmak için bu dosyayı silmeniz yeterli.
+/*
+var corporateTagMarkerFile = Path.Combine(fullDataPath, "corporate_tag_migration_done.json");
+if (!File.Exists(corporateTagMarkerFile))
+{
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            Console.WriteLine("🏷️ [CorporateTag] Tek seferlik migration başlıyor: tüm müşterilere 'corporate' tag'i eklenecek...");
+
+            var storeUrl = app.Configuration["Shopify:StoreUrl"]
+                ?? throw new InvalidOperationException("Shopify:StoreUrl is missing");
+            var accessToken = app.Configuration["Shopify:AccessToken"]
+                ?? throw new InvalidOperationException("Shopify:AccessToken is missing");
+
+            using var http = new HttpClient { BaseAddress = new Uri(storeUrl) };
+            http.DefaultRequestHeaders.Add("X-Shopify-Access-Token", accessToken);
+            const string endpoint = "admin/api/2024-01/graphql.json";
+
+            async Task<System.Text.Json.JsonDocument> RunGraphQLAsync(object payload)
+            {
+                while (true)
+                {
+                    var json = System.Text.Json.JsonSerializer.Serialize(payload);
+                    var content = new StringContent(json, Encoding.UTF8, "application/json");
+                    var resp = await http.PostAsync(endpoint, content);
+
+                    if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                    {
+                        Console.WriteLine("   ⏳ [CorporateTag] Rate limit, 10sn bekleniyor...");
+                        await Task.Delay(10000);
+                        continue;
+                    }
+
+                    var body = await resp.Content.ReadAsStringAsync();
+                    return System.Text.Json.JsonDocument.Parse(body);
+                }
+            }
+
+            string cursor = null;
+            bool hasNextPage = true;
+            bool fatalError = false;
+            int tagged = 0, alreadyTagged = 0, failed = 0, page = 0;
+
+            const string customersQuery = @"query($cursor: String) {
+                customers(first: 100, after: $cursor) {
+                    pageInfo { hasNextPage endCursor }
+                    edges { node { id tags } }
+                }
+            }";
+
+            const string tagsAddMutation = @"mutation($id: ID!, $tags: [String!]!) {
+                tagsAdd(id: $id, tags: $tags) {
+                    userErrors { field message }
+                }
+            }";
+
+            while (hasNextPage && !fatalError)
+            {
+                page++;
+                using var doc = await RunGraphQLAsync(new { query = customersQuery, variables = new { cursor } });
+
+                if (doc.RootElement.TryGetProperty("errors", out var errors))
+                {
+                    Console.WriteLine($"❌ [CorporateTag] GraphQL hatası: {errors}");
+                    fatalError = true;
+                    break;
+                }
+
+                var customers = doc.RootElement.GetProperty("data").GetProperty("customers");
+                var pageInfo = customers.GetProperty("pageInfo");
+                hasNextPage = pageInfo.GetProperty("hasNextPage").GetBoolean();
+                cursor = pageInfo.TryGetProperty("endCursor", out var ec) && ec.ValueKind == System.Text.Json.JsonValueKind.String
+                    ? ec.GetString()
+                    : null;
+
+                foreach (var edge in customers.GetProperty("edges").EnumerateArray())
+                {
+                    var node = edge.GetProperty("node");
+                    var customerId = node.GetProperty("id").GetString();
+
+                    var hasTag = node.GetProperty("tags").EnumerateArray()
+                        .Any(t => string.Equals(t.GetString(), "corporate", StringComparison.OrdinalIgnoreCase));
+
+                    if (hasTag)
+                    {
+                        alreadyTagged++;
+                        continue;
+                    }
+
+                    using var mDoc = await RunGraphQLAsync(new
+                    {
+                        query = tagsAddMutation,
+                        variables = new { id = customerId, tags = new[] { "corporate" } }
+                    });
+
+                    var userErrors = mDoc.RootElement.GetProperty("data").GetProperty("tagsAdd").GetProperty("userErrors");
+                    if (userErrors.GetArrayLength() > 0)
+                    {
+                        failed++;
+                        Console.WriteLine($"   ⚠️ [CorporateTag] {customerId} eklenemedi: {userErrors}");
+                    }
+                    else
+                    {
+                        tagged++;
+                    }
+
+                    await Task.Delay(250); // Shopify throttle koruması
+                }
+
+                Console.WriteLine($"   📄 [CorporateTag] Sayfa {page} bitti — eklenen: {tagged}, zaten var: {alreadyTagged}, hata: {failed}");
+            }
+
+            if (!fatalError)
+            {
+                var result = new
+                {
+                    Timestamp = DateTime.Now.ToString("o"),
+                    Status = "Tamamlandı",
+                    Tagged = tagged,
+                    AlreadyTagged = alreadyTagged,
+                    Failed = failed
+                };
+                await File.WriteAllTextAsync(corporateTagMarkerFile,
+                    System.Text.Json.JsonSerializer.Serialize(result, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"✅ [CorporateTag] Tamamlandı: {tagged} müşteriye eklendi, {alreadyTagged} zaten vardı, {failed} hata. Marker dosyası yazıldı, bir daha çalışmayacak.");
+            }
+            else
+            {
+                Console.WriteLine("❌ [CorporateTag] Hata nedeniyle yarıda kaldı, marker yazılmadı — sonraki açılışta kaldığı yerden (idempotent) tekrar dener.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ [CorporateTag] Beklenmeyen hata: {ex.Message}");
+        }
+    });
+}
+*/
+
 // Background service ayarlarını göster
 var tokenRefreshInterval = app.Configuration["App:BackgroundServices:TokenRefreshInterval"] ?? "00:03:00";
 var productSyncInterval = app.Configuration["App:BackgroundServices:ProductSyncInterval"] ?? "00:05:00";

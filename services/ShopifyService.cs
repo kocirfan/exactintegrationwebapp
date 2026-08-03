@@ -1960,6 +1960,66 @@ public class ShopifyService
         return result;
     }
 
+    // Tek bir SKU/Code için, o kodu taşıyan tüm Shopify ürün/varyantlarına stok yazar (dosyaya rapor yazmaz)
+    public async Task<BatchUpdateResult> UpdateStockByCodeAsync(string code, int newStock)
+    {
+        var result = new BatchUpdateResult();
+
+        var shopifyProducts = await GetAllProductsRawAsync();
+        try
+        {
+            var stockUpdates = new Dictionary<string, int> { [code] = newStock };
+            var updateTasks = PrepareUpdateTasks(shopifyProducts, stockUpdates);
+
+            if (updateTasks.Count == 0)
+            {
+                return result;
+            }
+
+            var locationId = await GetLocationIdAsync();
+            if (string.IsNullOrEmpty(locationId))
+            {
+                throw new Exception("Location ID bulunamadı");
+            }
+
+            var rateLimitTracker = new RateLimitTracker();
+            var updatedCodes = new List<string>();
+
+            foreach (var (sku, variantId, inventoryItemId, updatedStock, productTitle, currentStock) in updateTasks)
+            {
+                await rateLimitTracker.WaitIfNeededAsync();
+
+                var success = await ExecuteWithRetryAsync(async () =>
+                {
+                    await TrackInventoryItemAsync(inventoryItemId);
+                    await Task.Delay(200);
+                    await UpdateInventoryLevelAsync(locationId, inventoryItemId, updatedStock);
+                }, $"SKU {sku} Variant {variantId}");
+
+                if (success)
+                {
+                    result.SuccessCount++;
+                    if (!updatedCodes.Contains(sku)) updatedCodes.Add(sku);
+                    Console.WriteLine($"✅ Product: {productTitle} - Variant ID {variantId} - SKU {sku} - Stok {currentStock}'den {updatedStock}'e güncellendi");
+                }
+                else
+                {
+                    result.ErrorCount++;
+                    Console.WriteLine($"❌ Product: {productTitle} - Variant ID {variantId} - SKU {sku} güncellenemedi");
+                }
+
+                await Task.Delay(1000);
+            }
+
+            result.UpdatedCodes = updatedCodes;
+            return result;
+        }
+        finally
+        {
+            shopifyProducts.Dispose();
+        }
+    }
+
     // 3. Rate limit tracker sınıfı
     public class RateLimitTracker
     {
