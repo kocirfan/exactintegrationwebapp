@@ -346,6 +346,92 @@ public class ExactCustomerCrud
         return account;
     }
 
+    // Exact müşterisini ID (GUID) ile getirir.
+    // Email değişebildiği/boş olabildiği için ID daha güvenilir anahtardır.
+    public async Task<Account> GetCustomerByIdAsync(Guid customerId)
+    {
+        var exactService = _serviceProvider.GetRequiredService<ExactService>();
+        var token = await exactService.GetValidToken();
+
+        if (token == null)
+        {
+            _logger.LogError("Token alınamadı");
+            return null;
+        }
+
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var jsonOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            PropertyNamingPolicy = null,
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never,
+            ReadCommentHandling = JsonCommentHandling.Skip,
+            AllowTrailingCommas = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+        };
+
+        try
+        {
+            var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts(guid'{customerId}')";
+            var response = await client.GetAsync(url);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError("Müşteri ID ile alınamadı ({CustomerId}): {Status}", customerId, response.StatusCode);
+                return null;
+            }
+
+            var content = PreProcessJson(await response.Content.ReadAsStringAsync());
+            using var doc = JsonDocument.Parse(content);
+
+            if (!doc.RootElement.TryGetProperty("d", out var dElement))
+                return null;
+
+            // Tekil kayıt sorgusunda "d" doğrudan objedir; yine de dizi ihtimaline karşı kontrol et
+            JsonElement customerElement = dElement;
+            if (dElement.ValueKind == JsonValueKind.Array)
+            {
+                customerElement = dElement.EnumerateArray().FirstOrDefault();
+                if (customerElement.ValueKind == JsonValueKind.Undefined) return null;
+            }
+            else if (dElement.TryGetProperty("results", out var resultsProperty))
+            {
+                customerElement = resultsProperty.EnumerateArray().FirstOrDefault();
+                if (customerElement.ValueKind == JsonValueKind.Undefined) return null;
+            }
+
+            var account = JsonSerializer.Deserialize<Account>(PreProcessJson(customerElement.GetRawText()), jsonOptions);
+
+            if (account != null && account.Classification1 != null)
+            {
+                var classificationUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/AccountClassifications?$filter=ID eq guid'{account.Classification1}'";
+                var classResponse = await client.GetAsync(classificationUrl);
+                if (classResponse.IsSuccessStatusCode)
+                {
+                    var classContent = await classResponse.Content.ReadAsStringAsync();
+                    using var classDoc = JsonDocument.Parse(classContent);
+                    if (classDoc.RootElement.TryGetProperty("d", out var cd) &&
+                        cd.TryGetProperty("results", out var cr) &&
+                        cr.GetArrayLength() > 0)
+                    {
+                        account.ClassificationDescription = cr[0].GetProperty("Code").GetString();
+                    }
+                }
+            }
+
+            return account;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError("Müşteri ID ile alınırken hata ({CustomerId}): {Error}", customerId, ex.Message);
+            return null;
+        }
+    }
+
     private string PreProcessJson(string json)
     {
         // Source field'ı: sayı ise string'e çevir

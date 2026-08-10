@@ -1,5 +1,6 @@
 
 using System.Globalization;
+using Microsoft.EntityFrameworkCore;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using ExactOnline.Models;
@@ -70,7 +71,9 @@ public class ShopifyOrderCrud
         return null;
     }
 
-    // manuel olarak shopify sipariş getir
+    // manuel olarak shopify sipariş getir ve Exact'a gönder.
+    // Webhook akışıyla aynı korumaları uygular: daha önce işlendiyse tekrar göndermez,
+    // başarılı gönderimi ProcessedOrders tablosuna yazar (monitoring listesinde görünür).
     public async Task<ShopifyOrder?> GetOrderByIdAsync(long orderId)
     {
         var response = await _client.GetAsync($"orders/{orderId}.json");
@@ -90,7 +93,48 @@ public class ShopifyOrderCrud
                 orderElement.GetRawText(),
                 _jsonOptions
             );
+
+            using var scope = _serviceProvider.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ShopifyProductApp.Data.ApplicationDbContext>();
+
+            // Duplicate koruması: sipariş daha önce Exact'a gönderildiyse tekrar gönderme
+            var alreadyProcessed = await db.ProcessedOrders
+                .AnyAsync(o => o.ShopifyOrderId == order.Id ||
+                               (order.OrderNumber != 0 && o.ShopifyOrderNumber == order.OrderNumber));
+
+            if (alreadyProcessed)
+            {
+                _logger.LogWarning("⚠️ Sipariş zaten işlenmiş, tekrar gönderilmedi: {OrderId} (#{OrderNumber})",
+                    order.Id, order.OrderNumber);
+                return order;
+            }
+
             var (success, exactOrderId, exactOrderNumber) = await ProcessShopifyOrderToExact(order);
+
+            if (success)
+            {
+                try
+                {
+                    db.ProcessedOrders.Add(new ShopifyProductApp.Models.ProcessedOrder
+                    {
+                        ShopifyOrderId = order.Id,
+                        ShopifyOrderNumber = order.OrderNumber,
+                        ProcessedAt = DateTime.UtcNow,
+                        ExactOrderId = exactOrderNumber,
+                        ExactOrderGuid = exactOrderId
+                    });
+                    await db.SaveChangesAsync();
+
+                    _logger.LogInformation("💾 Manuel gönderilen sipariş DB'ye kaydedildi: {OrderId} → Exact {ExactOrderNumber}",
+                        order.Id, exactOrderNumber);
+                }
+                catch (Exception ex)
+                {
+                    // DB yazımı başarısız olsa da sipariş Exact'a gitti; akışı durdurma
+                    _logger.LogError("❌ Sipariş DB'ye kaydedilemedi ({OrderId}): {Error}", order.Id, ex.Message);
+                }
+            }
+
             return order;
         }
 
@@ -105,8 +149,15 @@ public class ShopifyOrderCrud
         {
             _logger.LogInformation("Shopify siparişi ExactOnline'a gönderiliyor...");
 
+            // 0. Kurumsal müşteri bilgisi (note_attributes: company_name, company_address, ...)
+            var companyInfo = ShopifyCompanyInfo.FromNoteAttributes(shopifyOrder.NoteAttributes);
+            if (companyInfo.HasCompany)
+            {
+                _logger.LogInformation("🏢 Kurumsal sipariş tespit edildi: {CompanyName}", companyInfo.Name);
+            }
+
             // 1. Müşteriyi  bul
-            var customerId = await _exactService.CreateOrGetCustomerAsync(shopifyOrder.Customer);
+            var customerId = await _exactService.CreateOrGetCustomerAsync(shopifyOrder.Customer, companyInfo);
             if (customerId == null)
             {
                 _logger.LogError("Müşteri oluşturulamadı veya bulunamadı");
@@ -115,6 +166,13 @@ public class ShopifyOrderCrud
 
             _logger.LogInformation($"ExactOnline Customer ID: {customerId}");
             await Task.Delay(API_REQUEST_DELAY_MS); // Müşteri işlemi sonrası bekle
+
+            // 1.2. Kurumsal ise ilgili kişiyi ve fatura adresini garanti et
+            Guid? contactPersonId = null;
+            if (companyInfo.HasCompany)
+            {
+                contactPersonId = await EnsureCompanyContactAndInvoiceAddress(shopifyOrder, companyInfo, customerId.Value);
+            }
 
             // 1.5. Note attributes'tan teslimat bilgilerini al
             string deliveryType = null;
@@ -623,6 +681,11 @@ public class ShopifyOrderCrud
                 OrderedBy = customerId.Value,
                 DeliverTo = customerId.Value,
                 InvoiceTo = customerId.Value,
+
+                // Kurumsal siparişlerde firmanın ilgili kişisi
+                OrderedByContactPerson = contactPersonId,
+                DeliverToContactPerson = contactPersonId,
+                InvoiceToContactPerson = contactPersonId,
                 OrderDate = orderDate,
                 DeliveryDate = defaultDeliveryDate,  // Pickup date veya varsayılan
                 Description = $"Shopify Order #{shopifyOrder.OrderNumber}",
@@ -693,6 +756,95 @@ public class ShopifyOrderCrud
             _logger.LogError($"Stack trace: {ex.StackTrace}");
             return (false, null, null);
         }
+    }
+
+    /// <summary>
+    /// Kurumsal siparişlerde ilgili kişiyi (contact) ve firma fatura adresini (Type=3) oluşturur/bulur.
+    /// Oluşturulan/bulunan contact GUID'ini döner; hata durumunda null döner ve sipariş akışını durdurmaz.
+    /// </summary>
+    private async Task<Guid?> EnsureCompanyContactAndInvoiceAddress(ShopifyOrder shopifyOrder, ShopifyCompanyInfo companyInfo, Guid customerId)
+    {
+        Guid? contactId = null;
+        try
+        {
+            // İlgili kişi: siparişteki müşteri adı, yoksa company_contact_person
+            var firstName = shopifyOrder.Customer?.FirstName?.Trim();
+            var lastName = shopifyOrder.Customer?.LastName?.Trim();
+
+            if (string.IsNullOrWhiteSpace(firstName) && !string.IsNullOrWhiteSpace(companyInfo.ContactPerson))
+            {
+                var parts = companyInfo.ContactPerson.Trim().Split(' ', 2);
+                firstName = parts[0];
+                lastName = parts.Length > 1 ? parts[1] : parts[0];
+            }
+
+            if (!string.IsNullOrWhiteSpace(firstName))
+            {
+                contactId = await _exactService.GetOrCreateContactAsync(
+                    customerId, firstName, lastName,
+                    shopifyOrder.Customer?.Email, companyInfo.Phone);
+                await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
+
+                if (contactId != null)
+                {
+                    _logger.LogInformation("👤 İlgili kişi hazır: {ContactId} ({FirstName} {LastName})", contactId, firstName, lastName);
+                }
+            }
+            else
+            {
+                _logger.LogWarning("⚠️ Kurumsal siparişte ilgili kişi adı bulunamadı, contact oluşturulmadı");
+            }
+
+            // Fatura adresi (Type=3): company_address
+            if (!string.IsNullOrWhiteSpace(companyInfo.Address))
+            {
+                var billingAddresses = await GetCustomerBillingAddressesWithDelay(customerId.ToString());
+
+                bool addressExists = billingAddresses.Any(a =>
+                    string.Equals(a.FullAddress, companyInfo.FullAddress, StringComparison.OrdinalIgnoreCase));
+
+                if (!addressExists)
+                {
+                    var invoiceAddress = new ExactAddress
+                    {
+                        AccountId = customerId,
+                        Type = 3, // 3 = Fatura Adresi
+                        AddressLine1 = companyInfo.Address ?? "",
+                        City = companyInfo.City ?? "",
+                        PostalCode = companyInfo.PostalCode ?? "",
+                        IsMain = true,
+                        CountryCode = shopifyOrder.BillingAddress?.CountryCode
+                            ?? shopifyOrder.ShippingAddress?.CountryCode ?? "",
+                        AccountName = companyInfo.Name,
+                        ContactName = $"{firstName} {lastName}".Trim(),
+                        Phone = companyInfo.Phone ?? "",
+                        Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
+                    };
+
+                    var createdInvoiceAddress = await _exactAddressCrud.CreateAddress(invoiceAddress);
+                    await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
+
+                    if (createdInvoiceAddress != null)
+                    {
+                        _logger.LogInformation("🧾 Firma fatura adresi oluşturuldu: {Address}", companyInfo.FullAddress);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ Firma fatura adresi oluşturulamadı: {Address}", companyInfo.FullAddress);
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation("🧾 Firma fatura adresi zaten mevcut: {Address}", companyInfo.FullAddress);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError("❌ Kurumsal contact/fatura adresi hazırlanırken hata: {Error}", ex.Message);
+        }
+
+        return contactId;
     }
 
     /// <summary>

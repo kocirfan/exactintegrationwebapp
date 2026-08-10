@@ -366,6 +366,20 @@ builder.Services.AddScoped<ShopifyGraphQLService>();
 // Configuration sınıfını da ekle
 builder.Services.AddSingleton<AppConfiguration>();
 
+// Stok sync loglarını DB'ye yazan servis (background service + test endpoint'i kullanır)
+builder.Services.AddSingleton<StockSyncLogService>();
+
+// Manuel stok senkronu tetikleyici (monitoring controller kullanır)
+builder.Services.AddSingleton<ManualStockSyncRunner>();
+
+// Fiyat sync logları + manuel fiyat senkronu tetikleyici
+builder.Services.AddSingleton<PriceSyncLogService>();
+builder.Services.AddSingleton<ManualPriceSyncRunner>();
+
+// Müşteri sync logları + manuel müşteri senkronu tetikleyici (dashboard kullanır)
+builder.Services.AddSingleton<CustomerSyncLogService>();
+builder.Services.AddSingleton<ManualCustomerSyncRunner>();
+
 // Thread-Safe Background Services
 // Stok sync (günlük 09:30)
 builder.Services.AddHostedService<StockSyncBackgroundService>();
@@ -373,11 +387,12 @@ builder.Services.AddHostedService<StockSyncBackgroundService>();
 //builder.Services.AddHostedService<PriceSyncBackgroundService>();        // Fiyat sync (her 10 dakika, son 15dk değişenler)
 //--------------metafieldlara id yazmak içindi
 builder.Services.AddHostedService<ExactProductIdMetafieldSyncService>();
-//--> canlıda bunları çalıştır iki alttaki
+// Aşağıdaki 3 müşteri servisi KAPALI kalacak: yazdıkları metafield'lar (customer_id,
+// exact_discount_code, customer_code) zaten UpdateCustomerAsync ile her müşteri
+// senkronunda güncelleniyor. Müşteri güncelleme yolları: gece servisi + webhook + manuel tetikleme.
 //builder.Services.AddHostedService<ExactCustomerIdMetafieldSyncService>(); // Customer exact_customer_id metafield sync (her gün 05:00)
-builder.Services.AddHostedService<ExactDiscountCodeSyncService>(); // Customer exact_discount_code metafield sync (başlangıçta çalışır)
-//bu eklendi classification kontrolü içim
-builder.Services.AddHostedService<UpdateExactCustomerJob>();
+//builder.Services.AddHostedService<ExactDiscountCodeSyncService>(); // Customer exact_discount_code metafield sync (başlangıçta çalışır)
+//builder.Services.AddHostedService<UpdateExactCustomerJob>(); // 5 dakikada bir çalışıyordu, DB'ye yazmıyordu
 //New product var ama ProductPriceAndTitleUpdateService bundan emin değilim açık şimdilik
 builder.Services.AddHostedService<NewProductCreationService>();
 builder.Services.AddHostedService<NoDiscountTagSyncService>(); // Son 10dk'da modified webshop ürünlerin isNoDiscount tag'ını senkronize eder
@@ -386,7 +401,13 @@ builder.Services.AddHostedService<NoDiscountTagSyncService>(); // Son 10dk'da mo
 builder.Services.AddScoped<ProductPriceAndTitleUpdateService>();
 
 // Uygulama başlangıcında bir kez tüm Exact ürünlerini Shopify'da toplu fiyat günceller
-builder.Services.AddHostedService<BulkPriceSyncBackgroundService>();
+//builder.Services.AddHostedService<BulkPriceSyncBackgroundService>(); // KAPATILDI: yerine NightlyPriceSyncBackgroundService (her gece tüm ürünler + PriceSyncLogs)
+
+// Her gece 03:00'te TÜM ürünlerin fiyatını Exact'tan Shopify'a senkronlar (PriceSyncLogs'a yazar)
+builder.Services.AddHostedService<NightlyPriceSyncBackgroundService>();
+
+// Her gece 04:30'da son 24 saatte değişen müşterileri senkronlar (CustomerSyncLogs'a yazar)
+builder.Services.AddHostedService<NightlyCustomerSyncBackgroundService>();
 builder.Services.AddSingleton<ITokenBlacklistService, TokenBlacklistService>();
 
 var app = builder.Build();

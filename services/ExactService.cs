@@ -1379,7 +1379,8 @@ public class ExactService
     /// <summary>
     /// Exact'tan webshop ürünlerini sayfalı olarak çeker (skip/top destekli).
     /// </summary>
-    public async Task<List<Dictionary<string, object>>?> GetWebshopItemsPageAsync(int skip, int top)
+    // extraFilter verilirse ana filtreye "and (...)" olarak eklenir (örn. arama/stok filtresi)
+    public async Task<List<Dictionary<string, object>>?> GetWebshopItemsPageAsync(int skip, int top, string extraFilter = null)
     {
         var token = await GetValidToken();
         if (token == null) return null;
@@ -1389,7 +1390,11 @@ public class ExactService
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-        var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/Items?$filter=IsWebshopItem eq 1&$top={top}&$skip={skip}&$select=ID,Code,Description";
+        var filter = "IsWebshopItem eq 1";
+        if (!string.IsNullOrWhiteSpace(extraFilter))
+            filter += $" and ({extraFilter})";
+
+        var url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/Items?$filter={Uri.EscapeDataString(filter)}&$top={top}&$skip={skip}&$select=ID,Code,Description,Stock,Unit,StandardSalesPrice,Created,Modified,PictureUrl";
 
         int retryCount = 0;
         const int maxRetries = 3;
@@ -2028,7 +2033,67 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
 
     //     return allStockedItems;
     // }
-    public async Task<List<Dictionary<string, object>>?> GetAllStockedItemsAsync()
+    // Exact'taki toplam webshop ürün sayısını döner (ürünleri çekmeden, tek sorguyla)
+    // extraFilter verilirse ana filtreye "and (...)" olarak eklenir
+    public async Task<int?> GetWebshopItemsCountAsync(string extraFilter = null)
+    {
+        var token = await GetValidToken();
+        if (token == null) return null;
+
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token.access_token);
+
+        var filter = "IsWebshopItem eq 1";
+        if (!string.IsNullOrWhiteSpace(extraFilter))
+            filter += $" and ({extraFilter})";
+        var encodedFilter = Uri.EscapeDataString(filter);
+
+        try
+        {
+            // 1) OData $count (düz sayı döner)
+            var countUrl = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/Items/$count?$filter={encodedFilter}";
+            var response = await client.GetAsync(countUrl);
+            if (response.IsSuccessStatusCode)
+            {
+                var text = (await response.Content.ReadAsStringAsync()).Trim();
+                if (int.TryParse(text, out var count))
+                    return count;
+            }
+
+            // 2) Fallback: $inlinecount=allpages ile __count alanı
+            client.DefaultRequestHeaders.Accept.Clear();
+            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            var inlineUrl = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/Items?$filter={encodedFilter}&$top=1&$select=ID&$inlinecount=allpages";
+            var inlineResponse = await client.GetAsync(inlineUrl);
+            if (inlineResponse.IsSuccessStatusCode)
+            {
+                var json = await inlineResponse.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("d", out var d) &&
+                    d.ValueKind == JsonValueKind.Object &&
+                    d.TryGetProperty("__count", out var countProp))
+                {
+                    var countStr = countProp.ValueKind == JsonValueKind.String
+                        ? countProp.GetString()
+                        : countProp.GetRawText();
+                    if (int.TryParse(countStr, out var inlineCount))
+                        return inlineCount;
+                }
+            }
+
+            _logger.LogError("❌ Webshop ürün sayısı alınamadı");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError("❌ Webshop ürün sayısı alınırken hata: {Error}", ex.Message);
+            return null;
+        }
+    }
+
+    // maxItems verilirse tarama o kadar ürün bulunur bulunmaz erken durdurulur (test/kısmi senkron için)
+    public async Task<List<Dictionary<string, object>>?> GetAllStockedItemsAsync(int? maxItems = null)
     {
         var token = await GetValidToken();
         if (token == null) return null;
@@ -2176,9 +2241,19 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
                     stockedInPage++;
                     Console.WriteLine($"   ✅ Stoklu ürün eklendi: {dict.GetValueOrDefault("Code", "N/A")} (Stok: {stockValue})");
                     countInPage++;
+
+                    // maxItems limitine ulaşıldıysa taramayı erken bitir
+                    if (maxItems.HasValue && allStockedItems.Count >= maxItems.Value)
+                        break;
                 }
 
                 Console.WriteLine($"📦 Sayfa {skip / top + 1}: {countInPage} ürün alındı, {stockedInPage} stoklu ürün bulundu. Toplam stoklu: {allStockedItems.Count}");
+
+                if (maxItems.HasValue && allStockedItems.Count >= maxItems.Value)
+                {
+                    Console.WriteLine($"🧪 maxItems limitine ulaşıldı ({maxItems.Value}), tarama erken durduruldu");
+                    break;
+                }
 
                 // 🔑 ÖNEMLI FIX: Eğer hiç ürün gelmemişse, tüm ürünler alınmış demektir
                 if (countInPage == 0)
@@ -3072,8 +3147,10 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
     }
 
     // Customer oluşturma/bulma metodu
-    public async Task<Guid?> CreateOrGetCustomerAsync(ShopifyCustomer customer)
+    // companyInfo.HasCompany true ise hesap firma adına (company_name) aranır/oluşturulur
+    public async Task<Guid?> CreateOrGetCustomerAsync(ShopifyCustomer customer, ShopifyCompanyInfo companyInfo = null)
     {
+        bool isCompany = companyInfo?.HasCompany == true;
         var token = await GetValidToken();
         if (token == null)
         {
@@ -3088,11 +3165,25 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
 
         try
         {
-            // Önce müşteriyi email ile ara
-            var email = customer.Email?.Replace("'", "''");
-            var searchUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Email eq '{email}' and Status eq 'C'&$select=ID,Name,Email,Status";
+            // Önce müşteriyi email ile ara (kurumsal ise company_email öncelikli)
+            var searchEmail = isCompany && !string.IsNullOrWhiteSpace(companyInfo.Email)
+                ? companyInfo.Email
+                : customer.Email;
+            var email = searchEmail?.Replace("'", "''");
 
-            Console.WriteLine($"🔍 Müşteri aranıyor: {email}");
+            string searchUrl;
+            if (isCompany && string.IsNullOrWhiteSpace(searchEmail))
+            {
+                // Kurumsal ama email yok: firma adı ile ara
+                var escapedCompanyName = companyInfo.Name.Replace("'", "''");
+                searchUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Name eq '{escapedCompanyName}' and Status eq 'C'&$select=ID,Name,Email,Status";
+                Console.WriteLine($"🔍 Kurumsal müşteri firma adı ile aranıyor: {companyInfo.Name}");
+            }
+            else
+            {
+                searchUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Email eq '{email}' and Status eq 'C'&$select=ID,Name,Email,Status";
+                Console.WriteLine($"🔍 Müşteri aranıyor: {email}{(isCompany ? " (kurumsal)" : "")}");
+            }
 
             var searchResponse = await client.GetAsync(searchUrl);
             if (searchResponse.IsSuccessStatusCode)
@@ -3130,23 +3221,51 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
             // Müşteri bulunamadı - Yeni müşteri oluştur (sadece Status "C" olarak)
             Console.WriteLine($"⚠️ Müşteri bulunamadı: {email} - Yeni müşteri (Status=C) oluşturuluyor...");
 
-            // Müşteri adını oluştur
-            var customerName = $"{customer.FirstName} {customer.LastName}".Trim();
-            if (string.IsNullOrEmpty(customerName))
+            // Müşteri adını oluştur (kurumsal ise firma adı)
+            string customerName;
+            if (isCompany)
             {
-                customerName = customer.Email;
+                customerName = companyInfo.Name;
+            }
+            else
+            {
+                customerName = $"{customer.FirstName} {customer.LastName}".Trim();
+                if (string.IsNullOrEmpty(customerName))
+                {
+                    customerName = customer.Email;
+                }
             }
 
             // Yeni müşteri verisi oluştur
             var newCustomerData = new Dictionary<string, object>
             {
                 { "Name", customerName },
-                { "Email", customer.Email ?? "" },
+                { "Email", (isCompany ? (companyInfo.Email ?? customer.Email) : customer.Email) ?? "" },
                 { "Status", "C" } // C = Customer
             };
 
+            if (isCompany)
+            {
+                // Firma bilgileri: company_address hesabın ana adresi olur
+                if (!string.IsNullOrEmpty(companyInfo.Address))
+                    newCustomerData["AddressLine1"] = companyInfo.Address;
+
+                if (!string.IsNullOrEmpty(companyInfo.City))
+                    newCustomerData["City"] = companyInfo.City;
+
+                if (!string.IsNullOrEmpty(companyInfo.PostalCode))
+                    newCustomerData["Postcode"] = companyInfo.PostalCode;
+
+                if (!string.IsNullOrEmpty(companyInfo.Phone))
+                    newCustomerData["Phone"] = companyInfo.Phone;
+
+                // Ülke bilgisi note_attributes'ta yok; fatura/varsayılan adresten al
+                var countryCode = customer?.DefaultAddress?.CountryCode;
+                if (!string.IsNullOrEmpty(countryCode))
+                    newCustomerData["Country"] = countryCode;
+            }
             // Adres bilgilerini ekle (varsa)
-            if (customer.DefaultAddress != null)
+            else if (customer.DefaultAddress != null)
             {
                 if (!string.IsNullOrEmpty(customer.DefaultAddress.Address1))
                     newCustomerData["AddressLine1"] = customer.DefaultAddress.Address1;
@@ -3208,6 +3327,111 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
         return null;
     }
 
+
+    // Hesaba bağlı ilgili kişiyi (crm/Contacts) bul, yoksa oluştur
+    public async Task<Guid?> GetOrCreateContactAsync(Guid accountId, string firstName, string lastName, string email = null, string phone = null)
+    {
+        var token = await GetValidToken();
+        if (token == null)
+        {
+            Console.WriteLine("❌ Token alınamadı");
+            return null;
+        }
+
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        try
+        {
+            // Exact'ta LastName zorunlu
+            if (string.IsNullOrWhiteSpace(lastName))
+                lastName = firstName;
+
+            // Önce hesabın mevcut kontaklarına bak
+            var searchUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Contacts?$filter=Account eq guid'{accountId}'&$select=ID,FirstName,LastName,Email";
+            var searchResponse = await client.GetAsync(searchUrl);
+            if (searchResponse.IsSuccessStatusCode)
+            {
+                var searchContent = await searchResponse.Content.ReadAsStringAsync();
+                using var searchDoc = JsonDocument.Parse(searchContent);
+
+                var dataElement = searchDoc.RootElement.GetProperty("d");
+                JsonElement resultsElement = dataElement.ValueKind == JsonValueKind.Object && dataElement.TryGetProperty("results", out var res)
+                    ? res : dataElement;
+
+                foreach (var contact in resultsElement.EnumerateArray())
+                {
+                    var contactEmail = contact.TryGetProperty("Email", out var emailProp) ? emailProp.GetString() : null;
+                    var contactFirstName = contact.TryGetProperty("FirstName", out var fnProp) ? fnProp.GetString() : null;
+                    var contactLastName = contact.TryGetProperty("LastName", out var lnProp) ? lnProp.GetString() : null;
+
+                    bool emailMatch = !string.IsNullOrWhiteSpace(email) &&
+                        string.Equals(contactEmail?.Trim(), email.Trim(), StringComparison.OrdinalIgnoreCase);
+                    bool nameMatch = string.Equals(contactFirstName?.Trim(), firstName?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(contactLastName?.Trim(), lastName?.Trim(), StringComparison.OrdinalIgnoreCase);
+
+                    if ((emailMatch || nameMatch) && contact.TryGetProperty("ID", out var idProp) &&
+                        Guid.TryParse(idProp.GetString(), out var existingContactId))
+                    {
+                        Console.WriteLine($"✅ Mevcut ilgili kişi bulundu: {existingContactId} ({contactFirstName} {contactLastName})");
+                        return existingContactId;
+                    }
+                }
+            }
+
+            // Bulunamadı - yeni ilgili kişi oluştur
+            var newContactData = new Dictionary<string, object>
+            {
+                { "Account", accountId.ToString() },
+                { "FirstName", firstName ?? "" },
+                { "LastName", lastName }
+            };
+
+            if (!string.IsNullOrWhiteSpace(email))
+                newContactData["Email"] = email;
+
+            if (!string.IsNullOrWhiteSpace(phone))
+                newContactData["Phone"] = phone;
+
+            var createUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Contacts";
+            var jsonContent = JsonSerializer.Serialize(newContactData);
+            var httpContent = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+
+            Console.WriteLine($"📤 Yeni ilgili kişi oluşturuluyor: {firstName} {lastName}");
+
+            var createResponse = await client.PostAsync(createUrl, httpContent);
+            var createContent = await createResponse.Content.ReadAsStringAsync();
+
+            if (createResponse.IsSuccessStatusCode)
+            {
+                using var createDoc = JsonDocument.Parse(createContent);
+                if (createDoc.RootElement.TryGetProperty("d", out var dElement) &&
+                    dElement.TryGetProperty("ID", out var newIdProp) &&
+                    Guid.TryParse(newIdProp.GetString(), out var newContactId))
+                {
+                    Console.WriteLine($"✅ Yeni ilgili kişi oluşturuldu: {newContactId}");
+                    _logger.LogInformation("ExactOnline'da yeni ilgili kişi oluşturuldu: {ContactId} - {FirstName} {LastName}", newContactId, firstName, lastName);
+                    return newContactId;
+                }
+
+                Console.WriteLine($"⚠️ İlgili kişi oluşturuldu ancak ID alınamadı. Response: {createContent}");
+            }
+            else
+            {
+                Console.WriteLine($"❌ İlgili kişi oluşturma hatası: {createResponse.StatusCode}");
+                _logger.LogError("ExactOnline ilgili kişi oluşturma hatası: {StatusCode} - {Content}", createResponse.StatusCode, createContent);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ ExactOnline ilgili kişi arama/oluşturma hatası: {ex.Message}");
+            _logger.LogError("İlgili kişi arama/oluşturma hatası: {Error}", ex.Message);
+        }
+
+        return null;
+    }
 
     public async Task<Item> GetOrCreateItemAsync(string itemName)
     {

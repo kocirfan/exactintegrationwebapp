@@ -1,5 +1,8 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using ShopifyProductApp.Data;
+using ShopifyProductApp.Models;
 using ShopifyProductApp.Services;
 using System;
 using System.Threading;
@@ -12,15 +15,18 @@ namespace ShopifyProductApp.Services
         private readonly IServiceProvider _serviceProvider;
         private readonly ITokenManager _tokenManager;
         private readonly ILogger<StockSyncBackgroundService> _logger;
+        private readonly StockSyncLogService _stockSyncLogService;
 
         public StockSyncBackgroundService(
             IServiceProvider serviceProvider,
             ITokenManager tokenManager,
-            ILogger<StockSyncBackgroundService> logger)
+            ILogger<StockSyncBackgroundService> logger,
+            StockSyncLogService stockSyncLogService)
         {
             _serviceProvider = serviceProvider;
             _tokenManager = tokenManager;
             _logger = logger;
+            _stockSyncLogService = stockSyncLogService;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -50,7 +56,6 @@ namespace ShopifyProductApp.Services
                         var shopifyService = scope.ServiceProvider.GetRequiredService<ShopifyService>();
                         // ✅ DÜZELTME: ISettingsService kullan
                         var settingsService = scope.ServiceProvider.GetRequiredService<ISettingsService>();
-                        var productSyncService = scope.ServiceProvider.GetRequiredService<ProductPriceAndTitleUpdateService>();
 
                         // Token kontrolü
                         var tokenResponse = await exactService.GetValidToken();
@@ -60,7 +65,7 @@ namespace ShopifyProductApp.Services
                             continue;
                         }
 
-                        await PerformStockSync(exactService, shopifyService, settingsService,productSyncService);
+                        await PerformStockSync(exactService, shopifyService, settingsService);
                     }
 
                     _logger.LogInformation("✅ Günlük stok senkronizasyonu tamamlandı");
@@ -82,10 +87,9 @@ namespace ShopifyProductApp.Services
 
         // ✅ DÜZELTME: ISettingsService parametresi
         private async Task PerformStockSync(
-            ExactService exactService, 
-            ShopifyService shopifyService, 
-            ISettingsService settingsService,
-            ProductPriceAndTitleUpdateService productSyncService)
+            ExactService exactService,
+            ShopifyService shopifyService,
+            ISettingsService settingsService)
         {
             try
             {
@@ -101,13 +105,21 @@ namespace ShopifyProductApp.Services
                 _logger.LogInformation("📊 {Count} stoklu ürün bulundu", exactItems.Count);
 
                 var shopifyProducts = await shopifyService.GetAllProductsRawAsync();
-                var batchResult = await shopifyService.UpdateMultipleStocksBatchAsync(exactItems, shopifyProducts, "Data/daily_stock_sync.json");
+
+                // Eşleştirme indeksi: exact_product_id → kod → barcode (kod değişse bile ürün bulunur)
+                var matchIndex = await shopifyService.BuildShopifyMatchIndexAsync();
+
+                var batchResult = await shopifyService.UpdateMultipleStocksBatchAsync(
+                    exactItems, shopifyProducts, "Data/daily_stock_sync.json", matchIndex);
 
                 _logger.LogInformation("🎉 Stok senkronizasyonu tamamlandı - Başarılı: {Success}, Hatalı: {Error}",
                     batchResult.SuccessCount, batchResult.ErrorCount);
 
-                //price ve title güncellemesi
-                await productSyncService.ExecuteAsync();
+                // Her ürünün güncelleme kaydını DB'ye yaz (best-effort: DB hatası senkronu durdurmaz)
+                await _stockSyncLogService.SaveAsync(batchResult.LogEntries);
+
+                // NOT: Eski fiyat+başlık güncellemesi kaldırıldı - fiyatlar artık
+                // NightlyPriceSyncBackgroundService ile her gece ayrıca senkronlanıyor
 
                 shopifyProducts.Dispose();
             }

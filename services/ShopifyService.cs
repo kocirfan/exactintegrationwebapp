@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
 using ExactOnline.Models;
+using ShopifyProductApp.Models;
 
 namespace ShopifyProductApp.Services;
 
@@ -9,6 +10,18 @@ public class BatchUpdateResult
     public int SuccessCount { get; set; }
     public int ErrorCount { get; set; }
     public List<string> UpdatedCodes { get; set; } = new();
+
+    // Her ürün/variant güncellemesinin DB'ye yazılacak kaydı (DB yazımını çağıran taraf yapar)
+    public List<StockSyncLog> LogEntries { get; set; } = new();
+}
+
+public class PriceBatchUpdateResult
+{
+    public int SuccessCount { get; set; }
+    public int ErrorCount { get; set; }
+    public int UnchangedCount { get; set; }         // Fiyat zaten aynı - API çağrısı yapılmadı
+    public int SkippedZeroPriceCount { get; set; }  // Exact fiyatı 0/negatif - atlandı
+    public List<PriceSyncLog> LogEntries { get; set; } = new();
 }
 
 public class ShopifyService
@@ -1353,7 +1366,7 @@ public class ShopifyService
                     new
                     {
                         sku = exactProduct.Code,
-                        price = exactProduct.StandardSalesPrice?.ToString("F2") ?? "0.00",
+                        price = exactProduct.StandardSalesPrice?.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) ?? "0.00",
                         inventory_management = "shopify",
                         inventory_quantity = (int)(exactProduct.Stock ?? 0),
                         barcode = exactProduct.Barcode ?? "",
@@ -1507,7 +1520,9 @@ public class ShopifyService
         }
 
         var allProductsJson = new List<JsonElement>();
-        string endpoint = $"products.json?limit={limit}";
+        // status=active,draft: REST varsayılanı sadece active döndürür; draft ürünler de
+        // senkronlanmalı (Exact'ta var olup Shopify'da henüz yayına alınmamış ürünler).
+        string endpoint = $"products.json?limit={limit}&status=active,draft";
         int pageCount = 0;
         int totalProducts = 0;
         int retryCount = 0;
@@ -1816,19 +1831,26 @@ public class ShopifyService
     // 1. Exponential backoff ile retry mekanizması ekleyin
     private async Task<bool> ExecuteWithRetryAsync(Func<Task> operation, string operationName, int maxRetries = 3)
     {
+        var (success, _) = await ExecuteWithRetryDetailedAsync(operation, operationName, maxRetries);
+        return success;
+    }
+
+    // Başarısızlık durumunda hata mesajını da döndürür (DB loglaması için)
+    private async Task<(bool success, string error)> ExecuteWithRetryDetailedAsync(Func<Task> operation, string operationName, int maxRetries = 3)
+    {
         for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
             try
             {
                 await operation();
-                return true;
+                return (true, null);
             }
             catch (HttpRequestException ex) when (ex.Message.Contains("429"))
             {
                 if (attempt == maxRetries)
                 {
                     Console.WriteLine($"❌ {operationName} - Maksimum deneme sayısına ulaşıldı: {ex.Message}");
-                    return false;
+                    return (false, $"Rate limit (429) - maksimum deneme aşıldı: {ex.Message}");
                 }
 
                 // Exponential backoff: 2^attempt seconds + random jitter
@@ -1843,25 +1865,32 @@ public class ShopifyService
             catch (Exception ex)
             {
                 Console.WriteLine($"❌ {operationName} - Beklenmeyen hata: {ex.Message}");
-                return false;
+                return (false, ex.Message);
             }
         }
-        return false;
+        return (false, "Bilinmeyen hata: tüm denemeler başarısız");
     }
 
     // 2. Geliştirilmiş batch update metodu
+    // matchIndex verilirse eşleştirme önceliği: exact_product_id → SKU (kod) → barcode.
+    // Verilmezse eski davranış (yalnızca SKU eşleşmesi) korunur.
     public async Task<BatchUpdateResult> UpdateMultipleStocksBatchAsync(
         List<Dictionary<string, object>> exactItems,
         JsonDocument shopifyProducts,
-        string filePath)
+        string filePath,
+        (Dictionary<string, List<ShopifyVariantRef>> ByExactId,
+         Dictionary<string, List<ShopifyVariantRef>> BySku,
+         Dictionary<string, List<ShopifyVariantRef>> ByBarcode)? matchIndex = null)
     {
         Console.WriteLine("🔄 Batch stok güncelleme başlıyor...");
 
         var result = new BatchUpdateResult();
         var updatedCodes = new List<string>();
 
-        // SKU -> Stock mapping oluştur
+        // SKU -> Stock mapping oluştur (DB loglaması için Exact ID ve ürün adı da saklanır)
         var stockUpdates = new Dictionary<string, int>();
+        var exactIdByCode = new Dictionary<string, string>();
+        var exactNameByCode = new Dictionary<string, string>();
         foreach (var item in exactItems)
         {
             string code = item.ContainsKey("Code") ? item["Code"].ToString() : "";
@@ -1871,6 +1900,8 @@ public class ShopifyService
             if (!string.IsNullOrEmpty(code))
             {
                 stockUpdates[code] = stockInt;
+                exactIdByCode[code] = item.ContainsKey("ID") ? item["ID"]?.ToString() : null;
+                exactNameByCode[code] = item.ContainsKey("Description") ? item["Description"]?.ToString() : null;
             }
         }
 
@@ -1885,8 +1916,11 @@ public class ShopifyService
 
         Console.WriteLine($"📍 Location ID: {locationId}");
 
-        // Update tasks listesi oluştur
-        var updateTasks = PrepareUpdateTasks(shopifyProducts, stockUpdates);
+        // Update tasks listesi oluştur.
+        // Eşleştirme indeksi verildiyse ID öncelikli eşleştirme kullanılır (kod değişse bile bulunur).
+        var updateTasks = matchIndex.HasValue
+            ? PrepareUpdateTasksFromIndex(exactItems, matchIndex.Value)
+            : PrepareUpdateTasks(shopifyProducts, stockUpdates);
 
         Console.WriteLine($"🎯 {updateTasks.Count} variant stok güncellemesi yapılacak");
 
@@ -1897,12 +1931,12 @@ public class ShopifyService
         var rateLimitTracker = new RateLimitTracker();
 
         // Batch güncelleme - Daha agresif rate limiting ile
-        foreach (var (sku, variantId, inventoryItemId, newStock, productTitle, currentStock) in updateTasks)
+        foreach (var (sku, variantId, inventoryItemId, newStock, productTitle, currentStock, productId, price) in updateTasks)
         {
             // Rate limit kontrolü
             await rateLimitTracker.WaitIfNeededAsync();
 
-            var success = await ExecuteWithRetryAsync(async () =>
+            var (success, errorMessage) = await ExecuteWithRetryDetailedAsync(async () =>
             {
                 // 1. Inventory item'ı track edilen hale getir
                 await TrackInventoryItemAsync(inventoryItemId);
@@ -1914,6 +1948,21 @@ public class ShopifyService
                 await UpdateInventoryLevelAsync(locationId, inventoryItemId, newStock);
 
             }, $"SKU {sku} Variant {variantId}");
+
+            result.LogEntries.Add(new StockSyncLog
+            {
+                ExactItemId = exactIdByCode.GetValueOrDefault(sku),
+                ShopifyProductId = productId,
+                ShopifyVariantId = variantId,
+                ProductCode = sku,
+                ProductName = productTitle,
+                Price = price,
+                OldStock = currentStock,
+                NewStock = newStock,
+                UpdatedAt = DateTime.Now,
+                Success = success,
+                ErrorMessage = errorMessage
+            });
 
             if (success)
             {
@@ -1954,6 +2003,25 @@ public class ShopifyService
 
         result.UpdatedCodes = updatedCodes;
 
+        // Shopify'da hiç eşleşmeyen SKU'lar da loglansın (ürünün neden güncellenmediği belli olsun)
+        var matchedSkus = new HashSet<string>(updateTasks.Select(t => t.sku));
+        foreach (var kvp in stockUpdates)
+        {
+            if (!matchedSkus.Contains(kvp.Key))
+            {
+                result.LogEntries.Add(new StockSyncLog
+                {
+                    ExactItemId = exactIdByCode.GetValueOrDefault(kvp.Key),
+                    ProductCode = kvp.Key,
+                    ProductName = exactNameByCode.GetValueOrDefault(kvp.Key),
+                    NewStock = kvp.Value,
+                    UpdatedAt = DateTime.Now,
+                    Success = false,
+                    ErrorMessage = "Shopify'da eşleşen ürün/variant bulunamadı"
+                });
+            }
+        }
+
         // Sonuç raporları
         WriteResults(filePath, shopifyProducts, result, updateTasks.Count, updatedCodes.Count, skuSuccessCount);
 
@@ -1985,7 +2053,7 @@ public class ShopifyService
             var rateLimitTracker = new RateLimitTracker();
             var updatedCodes = new List<string>();
 
-            foreach (var (sku, variantId, inventoryItemId, updatedStock, productTitle, currentStock) in updateTasks)
+            foreach (var (sku, variantId, inventoryItemId, updatedStock, productTitle, currentStock, productId, price) in updateTasks)
             {
                 await rateLimitTracker.WaitIfNeededAsync();
 
@@ -2058,11 +2126,45 @@ public class ShopifyService
     }
 
     // 4. Yardımcı metodlar
-    private List<(string sku, string variantId, string inventoryItemId, int newStock, string productTitle, int currentStock)> PrepareUpdateTasks(
+    // Eşleştirme indeksinden update task listesi üretir (ID → kod → barcode önceliğiyle)
+    private List<(string sku, string variantId, string inventoryItemId, int newStock, string productTitle, int currentStock, string productId, decimal? price)> PrepareUpdateTasksFromIndex(
+        List<Dictionary<string, object>> exactItems,
+        (Dictionary<string, List<ShopifyVariantRef>> ByExactId,
+         Dictionary<string, List<ShopifyVariantRef>> BySku,
+         Dictionary<string, List<ShopifyVariantRef>> ByBarcode) matchIndex)
+    {
+        var updateTasks = new List<(string sku, string variantId, string inventoryItemId, int newStock, string productTitle, int currentStock, string productId, decimal? price)>();
+        var matchStats = new Dictionary<string, int> { ["exact_product_id"] = 0, ["sku"] = 0, ["barcode"] = 0 };
+
+        foreach (var item in exactItems)
+        {
+            var code = item.GetValueOrDefault("Code")?.ToString()?.Trim();
+            int newStock = item.TryGetValue("Stock", out var stockVal)
+                ? Convert.ToInt32(Convert.ToDouble(stockVal)) : 0;
+
+            var (variants, matchedBy) = MatchExactItem(item, matchIndex.ByExactId, matchIndex.BySku, matchIndex.ByBarcode);
+            if (variants.Count == 0) continue;
+
+            matchStats[matchedBy]++;
+
+            foreach (var v in variants)
+            {
+                if (string.IsNullOrEmpty(v.VariantId) || string.IsNullOrEmpty(v.InventoryItemId)) continue;
+
+                updateTasks.Add((code, v.VariantId, v.InventoryItemId, newStock,
+                    v.ProductTitle, v.CurrentStock, v.ProductId, v.CurrentPrice));
+            }
+        }
+
+        Console.WriteLine($"🔗 Eşleştirme: exact_product_id={matchStats["exact_product_id"]}, sku={matchStats["sku"]}, barcode={matchStats["barcode"]}");
+        return updateTasks;
+    }
+
+    private List<(string sku, string variantId, string inventoryItemId, int newStock, string productTitle, int currentStock, string productId, decimal? price)> PrepareUpdateTasks(
         JsonDocument shopifyProducts,
         Dictionary<string, int> stockUpdates)
     {
-        var updateTasks = new List<(string sku, string variantId, string inventoryItemId, int newStock, string productTitle, int currentStock)>();
+        var updateTasks = new List<(string sku, string variantId, string inventoryItemId, int newStock, string productTitle, int currentStock, string productId, decimal? price)>();
         var processedSkus = new HashSet<string>();
 
         if (shopifyProducts.RootElement.TryGetProperty("products", out var products))
@@ -2070,6 +2172,7 @@ public class ShopifyService
             foreach (var product in products.EnumerateArray())
             {
                 var productTitle = product.TryGetProperty("title", out var titleElement) ? titleElement.GetString() : "N/A";
+                var productId = product.TryGetProperty("id", out var productIdElement) ? productIdElement.ToString() : null;
 
                 if (product.TryGetProperty("variants", out var variants))
                 {
@@ -2085,10 +2188,17 @@ public class ShopifyService
                                 string inventoryItemId = variant.TryGetProperty("inventory_item_id", out var invItemElement) ? invItemElement.ToString() : null;
                                 int currentStock = variant.TryGetProperty("inventory_quantity", out var stockElement) ? stockElement.GetInt32() : 0;
 
+                                decimal? price = null;
+                                if (variant.TryGetProperty("price", out var priceElement) &&
+                                    decimal.TryParse(priceElement.GetString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var parsedPrice))
+                                {
+                                    price = parsedPrice;
+                                }
+
                                 if (!string.IsNullOrEmpty(variantId) && !string.IsNullOrEmpty(inventoryItemId))
                                 {
                                     int newStock = stockUpdates[sku];
-                                    updateTasks.Add((sku, variantId, inventoryItemId, newStock, productTitle, currentStock));
+                                    updateTasks.Add((sku, variantId, inventoryItemId, newStock, productTitle, currentStock, productId, price));
 
                                     // Çoklu SKU durumunu logla
                                     if (processedSkus.Contains(sku))
@@ -2512,6 +2622,443 @@ public class ShopifyService
     /// <summary>
     /// Sadece varyant fiyatını günceller. VariantId zaten biliniyorsa direkt PUT yapar.
     /// </summary>
+    // Shopify variantının eşleştirme için gereken bilgileri
+    public class ShopifyVariantRef
+    {
+        public string ProductId { get; set; }
+        public string VariantId { get; set; }
+        public string InventoryItemId { get; set; }
+        public string ProductTitle { get; set; }
+        public string Sku { get; set; }
+        public string Barcode { get; set; }
+        public int CurrentStock { get; set; }
+        public decimal? CurrentPrice { get; set; }
+    }
+
+    /// <summary>
+    /// Shopify ürünlerini Exact ile eşleştirmek için 3 ayrı harita üretir:
+    /// exact_product_id metafield'ı (öncelikli), SKU (kod) ve barcode.
+    /// Exact'taki ürün kodu değişse bile metafield sayesinde ürün bulunabilir.
+    /// GraphQL ile tek taramada metafield + variant bilgileri toplanır.
+    /// </summary>
+    public async Task<(Dictionary<string, List<ShopifyVariantRef>> ByExactId,
+                       Dictionary<string, List<ShopifyVariantRef>> BySku,
+                       Dictionary<string, List<ShopifyVariantRef>> ByBarcode)> BuildShopifyMatchIndexAsync()
+    {
+        var byExactId = new Dictionary<string, List<ShopifyVariantRef>>(StringComparer.OrdinalIgnoreCase);
+        var bySku = new Dictionary<string, List<ShopifyVariantRef>>(StringComparer.OrdinalIgnoreCase);
+        var byBarcode = new Dictionary<string, List<ShopifyVariantRef>>(StringComparer.OrdinalIgnoreCase);
+
+        string cursor = null;
+        int pageCount = 0;
+        const int maxPages = 60; // 60 * 250 = 15.000 ürün
+
+        Console.WriteLine("🔍 Shopify eşleştirme indeksi oluşturuluyor (exact_product_id / SKU / barcode)...");
+
+        while (pageCount < maxPages)
+        {
+            pageCount++;
+            var afterClause = cursor != null ? $", after: \"{cursor}\"" : "";
+
+            var query = $@"
+{{
+  products(first: 250{afterClause}) {{
+    pageInfo {{ hasNextPage endCursor }}
+    edges {{
+      node {{
+        id
+        title
+        metafield(namespace: ""custom"", key: ""exact_product_id"") {{ value }}
+        variants(first: 50) {{
+          edges {{
+            node {{
+              id
+              sku
+              barcode
+              price
+              inventoryQuantity
+              inventoryItem {{ id }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}";
+
+            JsonElement result;
+            try
+            {
+                var payload = new { query };
+                var jsonContent = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+                var response = await _client.PostAsync("graphql.json", jsonContent);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    Console.WriteLine($"❌ Eşleştirme indeksi GraphQL hatası: {response.StatusCode}");
+                    break;
+                }
+
+                result = JsonSerializer.Deserialize<JsonElement>(await response.Content.ReadAsStringAsync());
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Eşleştirme indeksi oluşturulurken hata: {ex.Message}");
+                break;
+            }
+
+            if (!result.TryGetProperty("data", out var data) ||
+                !data.TryGetProperty("products", out var products) ||
+                !products.TryGetProperty("edges", out var edges))
+                break;
+
+            foreach (var edge in edges.EnumerateArray())
+            {
+                var node = edge.GetProperty("node");
+
+                var productId = node.TryGetProperty("id", out var pidEl)
+                    ? pidEl.GetString()?.Replace("gid://shopify/Product/", "") : null;
+                var productTitle = node.TryGetProperty("title", out var titleEl) ? titleEl.GetString() : null;
+
+                string exactProductId = null;
+                if (node.TryGetProperty("metafield", out var mfEl) && mfEl.ValueKind == JsonValueKind.Object &&
+                    mfEl.TryGetProperty("value", out var mfVal))
+                    exactProductId = mfVal.GetString()?.Trim();
+
+                if (!node.TryGetProperty("variants", out var variantsEl) ||
+                    !variantsEl.TryGetProperty("edges", out var variantEdges))
+                    continue;
+
+                foreach (var vEdge in variantEdges.EnumerateArray())
+                {
+                    var v = vEdge.GetProperty("node");
+
+                    var variantRef = new ShopifyVariantRef
+                    {
+                        ProductId = productId,
+                        ProductTitle = productTitle,
+                        VariantId = v.TryGetProperty("id", out var vidEl)
+                            ? vidEl.GetString()?.Replace("gid://shopify/ProductVariant/", "") : null,
+                        InventoryItemId = v.TryGetProperty("inventoryItem", out var invEl) && invEl.ValueKind == JsonValueKind.Object &&
+                                          invEl.TryGetProperty("id", out var invIdEl)
+                            ? invIdEl.GetString()?.Replace("gid://shopify/InventoryItem/", "") : null,
+                        Sku = v.TryGetProperty("sku", out var skuEl) ? skuEl.GetString()?.Trim() : null,
+                        Barcode = v.TryGetProperty("barcode", out var bcEl) && bcEl.ValueKind == JsonValueKind.String
+                            ? bcEl.GetString()?.Trim() : null,
+                        CurrentStock = v.TryGetProperty("inventoryQuantity", out var qEl) && qEl.ValueKind == JsonValueKind.Number
+                            ? qEl.GetInt32() : 0,
+                        CurrentPrice = v.TryGetProperty("price", out var prEl) && prEl.ValueKind == JsonValueKind.String &&
+                                       decimal.TryParse(prEl.GetString(), System.Globalization.NumberStyles.Float,
+                                           System.Globalization.CultureInfo.InvariantCulture, out var pp)
+                            ? pp : (decimal?)null
+                    };
+
+                    if (string.IsNullOrEmpty(variantRef.VariantId)) continue;
+
+                    void AddTo(Dictionary<string, List<ShopifyVariantRef>> dict, string key)
+                    {
+                        if (string.IsNullOrWhiteSpace(key)) return;
+                        if (!dict.TryGetValue(key, out var list))
+                        {
+                            list = new List<ShopifyVariantRef>();
+                            dict[key] = list;
+                        }
+                        list.Add(variantRef);
+                    }
+
+                    AddTo(byExactId, exactProductId);
+                    AddTo(bySku, variantRef.Sku);
+                    AddTo(byBarcode, variantRef.Barcode);
+                }
+            }
+
+            var hasNext = products.TryGetProperty("pageInfo", out var pageInfo) &&
+                          pageInfo.TryGetProperty("hasNextPage", out var hasNextEl) && hasNextEl.GetBoolean();
+            if (!hasNext) break;
+
+            cursor = pageInfo.TryGetProperty("endCursor", out var cursorEl) ? cursorEl.GetString() : null;
+            if (string.IsNullOrEmpty(cursor)) break;
+
+            await Task.Delay(300); // GraphQL rate limit
+        }
+
+        Console.WriteLine($"✅ Eşleştirme indeksi hazır - exact_product_id: {byExactId.Count}, SKU: {bySku.Count}, barcode: {byBarcode.Count}");
+        return (byExactId, bySku, byBarcode);
+    }
+
+    /// <summary>
+    /// TEK ürün için hafif eşleştirme indeksi kurar (tüm katalog taranmaz).
+    /// Önce SKU/barcode ile hedefli arama yapar; bulunamazsa exact_product_id metafield
+    /// araması için GraphQL taramasına düşer (kod değişmiş olabilir).
+    /// </summary>
+    public async Task<(Dictionary<string, List<ShopifyVariantRef>> ByExactId,
+                       Dictionary<string, List<ShopifyVariantRef>> BySku,
+                       Dictionary<string, List<ShopifyVariantRef>> ByBarcode)> BuildSingleItemMatchIndexAsync(
+        Dictionary<string, object> exactItem)
+    {
+        var byExactId = new Dictionary<string, List<ShopifyVariantRef>>(StringComparer.OrdinalIgnoreCase);
+        var bySku = new Dictionary<string, List<ShopifyVariantRef>>(StringComparer.OrdinalIgnoreCase);
+        var byBarcode = new Dictionary<string, List<ShopifyVariantRef>>(StringComparer.OrdinalIgnoreCase);
+
+        var code = exactItem.GetValueOrDefault("Code")?.ToString()?.Trim();
+        var barcode = exactItem.GetValueOrDefault("Barcode")?.ToString()?.Trim();
+        var exactId = exactItem.GetValueOrDefault("ID")?.ToString()?.Trim();
+
+        // 1) SKU / barcode ile hedefli GraphQL araması (hızlı yol)
+        foreach (var (term, isBarcode) in new[] { (code, false), (barcode, true) })
+        {
+            if (string.IsNullOrWhiteSpace(term)) continue;
+
+            var searchField = isBarcode ? "barcode" : "sku";
+            var query = $@"
+{{
+  productVariants(first: 50, query: ""{searchField}:'{term.Replace("\"", "")}'"") {{
+    edges {{
+      node {{
+        id
+        sku
+        barcode
+        price
+        inventoryQuantity
+        inventoryItem {{ id }}
+        product {{
+          id
+          title
+          metafield(namespace: ""custom"", key: ""exact_product_id"") {{ value }}
+        }}
+      }}
+    }}
+  }}
+}}";
+            try
+            {
+                var payload = new { query };
+                var content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+                var response = await _client.PostAsync("graphql.json", content);
+                if (!response.IsSuccessStatusCode) continue;
+
+                var result = JsonSerializer.Deserialize<JsonElement>(await response.Content.ReadAsStringAsync());
+                if (!result.TryGetProperty("data", out var data) ||
+                    !data.TryGetProperty("productVariants", out var pv) ||
+                    !pv.TryGetProperty("edges", out var edges)) continue;
+
+                foreach (var edge in edges.EnumerateArray())
+                {
+                    var v = edge.GetProperty("node");
+                    var product = v.TryGetProperty("product", out var prodEl) ? prodEl : default;
+
+                    var variantRef = new ShopifyVariantRef
+                    {
+                        ProductId = product.ValueKind == JsonValueKind.Object && product.TryGetProperty("id", out var pidEl)
+                            ? pidEl.GetString()?.Replace("gid://shopify/Product/", "") : null,
+                        ProductTitle = product.ValueKind == JsonValueKind.Object && product.TryGetProperty("title", out var ptEl)
+                            ? ptEl.GetString() : null,
+                        VariantId = v.TryGetProperty("id", out var vidEl)
+                            ? vidEl.GetString()?.Replace("gid://shopify/ProductVariant/", "") : null,
+                        InventoryItemId = v.TryGetProperty("inventoryItem", out var invEl) && invEl.ValueKind == JsonValueKind.Object &&
+                                          invEl.TryGetProperty("id", out var invIdEl)
+                            ? invIdEl.GetString()?.Replace("gid://shopify/InventoryItem/", "") : null,
+                        Sku = v.TryGetProperty("sku", out var skuEl) ? skuEl.GetString()?.Trim() : null,
+                        Barcode = v.TryGetProperty("barcode", out var bcEl) && bcEl.ValueKind == JsonValueKind.String
+                            ? bcEl.GetString()?.Trim() : null,
+                        CurrentStock = v.TryGetProperty("inventoryQuantity", out var qEl) && qEl.ValueKind == JsonValueKind.Number
+                            ? qEl.GetInt32() : 0,
+                        CurrentPrice = v.TryGetProperty("price", out var prEl) && prEl.ValueKind == JsonValueKind.String &&
+                                       decimal.TryParse(prEl.GetString(), System.Globalization.NumberStyles.Float,
+                                           System.Globalization.CultureInfo.InvariantCulture, out var pp)
+                            ? pp : (decimal?)null
+                    };
+
+                    if (string.IsNullOrEmpty(variantRef.VariantId)) continue;
+
+                    string productExactId = null;
+                    if (product.ValueKind == JsonValueKind.Object &&
+                        product.TryGetProperty("metafield", out var mfEl) && mfEl.ValueKind == JsonValueKind.Object &&
+                        mfEl.TryGetProperty("value", out var mfVal))
+                        productExactId = mfVal.GetString()?.Trim();
+
+                    void AddTo(Dictionary<string, List<ShopifyVariantRef>> dict, string key)
+                    {
+                        if (string.IsNullOrWhiteSpace(key)) return;
+                        if (!dict.TryGetValue(key, out var list))
+                        {
+                            list = new List<ShopifyVariantRef>();
+                            dict[key] = list;
+                        }
+                        if (!list.Any(x => x.VariantId == variantRef.VariantId))
+                            list.Add(variantRef);
+                    }
+
+                    AddTo(byExactId, productExactId);
+                    AddTo(bySku, variantRef.Sku);
+                    AddTo(byBarcode, variantRef.Barcode);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Tekil eşleştirme araması hatası ({searchField}={term}): {ex.Message}");
+            }
+        }
+
+        // 2) Hedefli arama sonuç vermediyse: metafield (exact_product_id) ile tam tarama
+        bool foundById = !string.IsNullOrWhiteSpace(exactId) && byExactId.ContainsKey(exactId);
+        bool foundByCode = !string.IsNullOrWhiteSpace(code) && bySku.ContainsKey(code);
+        bool foundByBarcode = !string.IsNullOrWhiteSpace(barcode) && byBarcode.ContainsKey(barcode);
+
+        if (!foundById && !foundByCode && !foundByBarcode && !string.IsNullOrWhiteSpace(exactId))
+        {
+            Console.WriteLine($"🔍 {code}: kod/barcode ile bulunamadı, exact_product_id ile taranıyor...");
+            return await BuildShopifyMatchIndexAsync();
+        }
+
+        return (byExactId, bySku, byBarcode);
+    }
+
+    /// <summary>
+    /// Exact ürününe karşılık gelen Shopify variantlarını bulur.
+    /// Öncelik: exact_product_id metafield → SKU (kod) → barcode.
+    /// Kod değişse bile ID ile bulunur.
+    /// </summary>
+    public static (List<ShopifyVariantRef> Variants, string MatchedBy) MatchExactItem(
+        Dictionary<string, object> exactItem,
+        Dictionary<string, List<ShopifyVariantRef>> byExactId,
+        Dictionary<string, List<ShopifyVariantRef>> bySku,
+        Dictionary<string, List<ShopifyVariantRef>> byBarcode)
+    {
+        var exactId = exactItem.GetValueOrDefault("ID")?.ToString()?.Trim();
+        var code = exactItem.GetValueOrDefault("Code")?.ToString()?.Trim();
+        var barcode = exactItem.GetValueOrDefault("Barcode")?.ToString()?.Trim();
+
+        if (!string.IsNullOrWhiteSpace(exactId) && byExactId.TryGetValue(exactId, out var byIdMatch) && byIdMatch.Count > 0)
+            return (byIdMatch, "exact_product_id");
+
+        if (!string.IsNullOrWhiteSpace(code) && bySku.TryGetValue(code, out var bySkuMatch) && bySkuMatch.Count > 0)
+            return (bySkuMatch, "sku");
+
+        if (!string.IsNullOrWhiteSpace(barcode) && byBarcode.TryGetValue(barcode, out var byBarcodeMatch) && byBarcodeMatch.Count > 0)
+            return (byBarcodeMatch, "barcode");
+
+        return (new List<ShopifyVariantRef>(), null);
+    }
+
+    // Fiyat değerini güvenli şekilde decimal'e çevirir.
+    // ÖNEMLİ: double -> ToString() -> Parse zinciri locale yüzünden 93,5'i 935 yapabiliyor;
+    // bu yüzden sayısal tipler doğrudan cast edilir, string'lerde binlik ayracına izin verilmez.
+    public static decimal ConvertToDecimalSafe(object value)
+    {
+        switch (value)
+        {
+            case null: return 0;
+            case decimal m: return m;
+            case double d: return (decimal)d;
+            case float f: return (decimal)f;
+            case int i: return i;
+            case long l: return l;
+            default:
+                var s = value.ToString()?.Trim();
+                if (string.IsNullOrEmpty(s)) return 0;
+                // NumberStyles.Float binlik ayracını kabul etmez: "93,5" invariant'ta reddedilir,
+                // sonra mevcut kültürde (virgül ondalık) doğru parse edilir
+                if (decimal.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var inv)) return inv;
+                if (decimal.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.CurrentCulture, out var cur)) return cur;
+                return 0;
+        }
+    }
+
+    // Exact ürünlerinin fiyatlarını Shopify variantlarına yazar.
+    // Eşleştirme önceliği: exact_product_id metafield → SKU (kod) → barcode.
+    // Güvenlik: Exact fiyatı <= 0 olan ürünler atlanır (Shopify fiyatı sıfırlanmaz).
+    // Optimizasyon: fiyat zaten aynıysa API çağrısı yapılmaz, sadece loglanır.
+    public async Task<PriceBatchUpdateResult> UpdateMultiplePricesBatchAsync(
+        List<Dictionary<string, object>> exactItems,
+        Dictionary<string, List<ShopifyVariantRef>> byExactId,
+        Dictionary<string, List<ShopifyVariantRef>> bySku,
+        Dictionary<string, List<ShopifyVariantRef>> byBarcode)
+    {
+        var result = new PriceBatchUpdateResult();
+        var rateLimitTracker = new RateLimitTracker();
+
+        foreach (var item in exactItems)
+        {
+            var code = item.GetValueOrDefault("Code")?.ToString()?.Trim();
+            var exactItemId = item.GetValueOrDefault("ID")?.ToString();
+            var exactName = item.GetValueOrDefault("Description")?.ToString();
+            var newPrice = ConvertToDecimalSafe(item.GetValueOrDefault("StandardSalesPrice"));
+
+            var (variants, matchedBy) = MatchExactItem(item, byExactId, bySku, byBarcode);
+
+            if (variants.Count == 0)
+            {
+                result.LogEntries.Add(new PriceSyncLog
+                {
+                    ExactItemId = exactItemId,
+                    ProductCode = code,
+                    ProductName = exactName,
+                    NewPrice = newPrice,
+                    UpdatedAt = DateTime.Now,
+                    Success = false,
+                    ErrorMessage = "Shopify'da eşleşen ürün/variant bulunamadı (ID, kod ve barcode denendi)"
+                });
+                continue;
+            }
+
+            foreach (var v in variants)
+            {
+                var logEntry = new PriceSyncLog
+                {
+                    ExactItemId = exactItemId,
+                    ShopifyProductId = v.ProductId,
+                    ShopifyVariantId = v.VariantId,
+                    ProductCode = code,
+                    ProductName = v.ProductTitle ?? exactName,
+                    OldPrice = v.CurrentPrice,
+                    NewPrice = newPrice,
+                    UpdatedAt = DateTime.Now
+                };
+
+                // Güvenlik: Exact fiyatı 0/negatifse dokunma
+                if (newPrice <= 0)
+                {
+                    logEntry.Success = false;
+                    logEntry.ErrorMessage = "Exact fiyatı 0 veya negatif - Shopify fiyatı korundu";
+                    result.SkippedZeroPriceCount++;
+                    result.LogEntries.Add(logEntry);
+                    continue;
+                }
+
+                // Fiyat zaten aynıysa API çağrısı yapma
+                if (v.CurrentPrice.HasValue && v.CurrentPrice.Value == newPrice)
+                {
+                    logEntry.Success = true;
+                    result.UnchangedCount++;
+                    result.LogEntries.Add(logEntry);
+                    continue;
+                }
+
+                await rateLimitTracker.WaitIfNeededAsync();
+                var success = await UpdateVariantPriceDirectAsync(v.ProductId, v.VariantId, newPrice);
+                await Task.Delay(600);
+
+                logEntry.Success = success;
+                if (success)
+                {
+                    result.SuccessCount++;
+                    Console.WriteLine($"💶 {code} ({matchedBy} ile eşleşti): fiyat {v.CurrentPrice} -> {newPrice}");
+                }
+                else
+                {
+                    result.ErrorCount++;
+                    logEntry.ErrorMessage = "Shopify fiyat güncelleme isteği başarısız";
+                    Console.WriteLine($"❌ {code}: fiyat güncellenemedi");
+                }
+
+                result.LogEntries.Add(logEntry);
+            }
+        }
+
+        return result;
+    }
+
     public async Task<bool> UpdateVariantPriceDirectAsync(string productId, string variantId, decimal newPrice)
     {
         try
@@ -2524,7 +3071,8 @@ public class ShopifyService
                 variant = new
                 {
                     id = variantIdRaw,
-                    price = newPrice.ToString("F2")
+                    // Invariant: locale ne olursa olsun "93.50" formatında gitsin ("93,50" değil)
+                    price = newPrice.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)
                 }
             };
 

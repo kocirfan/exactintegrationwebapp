@@ -37,6 +37,19 @@ public class ExactOrder
     [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
     [System.Text.Json.Serialization.JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Guid? Salesperson { get; set; }
+
+    // Kurumsal siparişlerde firmanın ilgili kişisi (crm/Contacts GUID); null ise JSON'a dahil etme
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    [System.Text.Json.Serialization.JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? OrderedByContactPerson { get; set; }
+
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    [System.Text.Json.Serialization.JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? DeliverToContactPerson { get; set; }
+
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    [System.Text.Json.Serialization.JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? InvoiceToContactPerson { get; set; }
     
     public List<ExactOrderLine> SalesOrderLines { get; set; }
 }

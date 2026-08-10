@@ -150,8 +150,15 @@ namespace ShopifyProductApp.Controllers
             {
                 _logger.LogInformation("Shopify siparişi ExactOnline'a gönderiliyor...");
 
+                // 0. Kurumsal müşteri bilgisi (note_attributes: company_name, company_address, ...)
+                var companyInfo = ShopifyCompanyInfo.FromNoteAttributes(shopifyOrder.NoteAttributes);
+                if (companyInfo.HasCompany)
+                {
+                    _logger.LogInformation("🏢 Kurumsal sipariş tespit edildi: {CompanyName}", companyInfo.Name);
+                }
+
                 // 1. Müşteriyi  bul
-                var customerId = await _exactService.CreateOrGetCustomerAsync(shopifyOrder.Customer);
+                var customerId = await _exactService.CreateOrGetCustomerAsync(shopifyOrder.Customer, companyInfo);
                 if (customerId == null)
                 {
                     _logger.LogError("Müşteri oluşturulamadı veya bulunamadı");
@@ -159,6 +166,13 @@ namespace ShopifyProductApp.Controllers
                 }
 
                 _logger.LogInformation($"ExactOnline Customer ID: {customerId}");
+
+                // 1.2. Kurumsal ise ilgili kişiyi ve fatura adresini garanti et
+                Guid? contactPersonId = null;
+                if (companyInfo.HasCompany)
+                {
+                    contactPersonId = await EnsureCompanyContactAndInvoiceAddress(shopifyOrder, companyInfo, customerId.Value);
+                }
 
                 // 1.5. Note attributes'tan teslimat bilgilerini al
                 string deliveryType = null;
@@ -675,6 +689,11 @@ namespace ShopifyProductApp.Controllers
                     OrderedBy = customerId.Value,
                     DeliverTo = customerId.Value,
                     InvoiceTo = customerId.Value,
+
+                    // Kurumsal siparişlerde firmanın ilgili kişisi
+                    OrderedByContactPerson = contactPersonId,
+                    DeliverToContactPerson = contactPersonId,
+                    InvoiceToContactPerson = contactPersonId,
                     OrderDate = orderDate,
                     DeliveryDate = defaultDeliveryDate,  // Pickup date veya varsayılan
                     Description = $"Shopify Order #{shopifyOrder.OrderNumber}",
@@ -758,6 +777,93 @@ namespace ShopifyProductApp.Controllers
         }
 
         //adress kontorl
+        /// <summary>
+        /// Kurumsal siparişlerde ilgili kişiyi (contact) ve firma fatura adresini (Type=3) oluşturur/bulur.
+        /// Oluşturulan/bulunan contact GUID'ini döner; hata durumunda null döner ve sipariş akışını durdurmaz.
+        /// </summary>
+        private async Task<Guid?> EnsureCompanyContactAndInvoiceAddress(ShopifyOrder shopifyOrder, ShopifyCompanyInfo companyInfo, Guid customerId)
+        {
+            Guid? contactId = null;
+            try
+            {
+                // İlgili kişi: siparişteki müşteri adı, yoksa company_contact_person
+                var firstName = shopifyOrder.Customer?.FirstName?.Trim();
+                var lastName = shopifyOrder.Customer?.LastName?.Trim();
+
+                if (string.IsNullOrWhiteSpace(firstName) && !string.IsNullOrWhiteSpace(companyInfo.ContactPerson))
+                {
+                    var parts = companyInfo.ContactPerson.Trim().Split(' ', 2);
+                    firstName = parts[0];
+                    lastName = parts.Length > 1 ? parts[1] : parts[0];
+                }
+
+                if (!string.IsNullOrWhiteSpace(firstName))
+                {
+                    contactId = await _exactService.GetOrCreateContactAsync(
+                        customerId, firstName, lastName,
+                        shopifyOrder.Customer?.Email, companyInfo.Phone);
+
+                    if (contactId != null)
+                    {
+                        _logger.LogInformation("👤 İlgili kişi hazır: {ContactId} ({FirstName} {LastName})", contactId, firstName, lastName);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ Kurumsal siparişte ilgili kişi adı bulunamadı, contact oluşturulmadı");
+                }
+
+                // Fatura adresi (Type=3): company_address
+                if (!string.IsNullOrWhiteSpace(companyInfo.Address))
+                {
+                    var billingAddresses = await _exactAddressCrud.GetCustomerBillingAddresses(customerId.ToString());
+
+                    bool addressExists = billingAddresses.Any(a =>
+                        string.Equals(a.FullAddress, companyInfo.FullAddress, StringComparison.OrdinalIgnoreCase));
+
+                    if (!addressExists)
+                    {
+                        var invoiceAddress = new ExactAddress
+                        {
+                            AccountId = customerId,
+                            Type = 3, // 3 = Fatura Adresi
+                            AddressLine1 = companyInfo.Address ?? "",
+                            City = companyInfo.City ?? "",
+                            PostalCode = companyInfo.PostalCode ?? "",
+                            IsMain = true,
+                            CountryCode = shopifyOrder.BillingAddress?.CountryCode
+                                ?? shopifyOrder.ShippingAddress?.CountryCode ?? "",
+                            AccountName = companyInfo.Name,
+                            ContactName = $"{firstName} {lastName}".Trim(),
+                            Phone = companyInfo.Phone ?? "",
+                            Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
+                        };
+
+                        var createdInvoiceAddress = await _exactAddressCrud.CreateAddress(invoiceAddress);
+
+                        if (createdInvoiceAddress != null)
+                        {
+                            _logger.LogInformation("🧾 Firma fatura adresi oluşturuldu: {Address}", companyInfo.FullAddress);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("⚠️ Firma fatura adresi oluşturulamadı: {Address}", companyInfo.FullAddress);
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogInformation("🧾 Firma fatura adresi zaten mevcut: {Address}", companyInfo.FullAddress);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("❌ Kurumsal contact/fatura adresi hazırlanırken hata: {Error}", ex.Message);
+            }
+
+            return contactId;
+        }
+
         private bool IsBillingAddressDifferentFromShippingAddress(ShopifyOrder shopifyOrder)
         {
             // Eğer teslimat adresi yoksa varsayılan olarak aynı kabul et

@@ -41,9 +41,43 @@ public class ShopifyCustomerCrud
           _serviceProvider = serviceProvider;
     }
 
+    // Uzun API yanıtlarını log/DB için kısaltır
+    private static string Truncate(string value, int maxLength)
+    {
+        if (string.IsNullOrEmpty(value)) return value;
+        value = value.Replace("\n", " ").Replace("\r", " ").Trim();
+        return value.Length <= maxLength ? value : value.Substring(0, maxLength) + "...";
+    }
+
+    /// <summary>
+    /// UpdateCustomerAsync ile aynı işi yapar, ek olarak başarısızlık sebebini de döndürür.
+    /// Böylece hata mesajı log dosyası yerine DB'ye (CustomerSyncLogs) yazılabilir.
+    /// </summary>
+    public async Task<(bool Success, string Error)> UpdateCustomerDetailedAsync(Account exactAccount, string logFilePath, bool sendWelcomeEmail = false)
+    {
+        var errors = new List<string>();
+        void Collect(string message)
+        {
+            if (!string.IsNullOrWhiteSpace(message)) errors.Add(message);
+        }
+
+        var success = await UpdateCustomerAsync(exactAccount, logFilePath, sendWelcomeEmail, Collect);
+
+        if (success) return (true, null);
+
+        var error = errors.Count > 0
+            ? string.Join(" | ", errors.Distinct())
+            : "Shopify müşteri güncelleme başarısız (sebep belirlenemedi)";
+
+        return (false, error);
+    }
+
     // --> Webhook için tek bir müşteri güncelleme metodu
 
-    public async Task<bool> UpdateCustomerAsync(Account exactAccount, string logFilePath, bool sendWelcomeEmail = false)
+    public Task<bool> UpdateCustomerAsync(Account exactAccount, string logFilePath, bool sendWelcomeEmail = false)
+        => UpdateCustomerAsync(exactAccount, logFilePath, sendWelcomeEmail, null);
+
+    private async Task<bool> UpdateCustomerAsync(Account exactAccount, string logFilePath, bool sendWelcomeEmail, Action<string> onError)
     {
         try
         {
@@ -55,17 +89,40 @@ public class ShopifyCustomerCrud
                 var customerCode = await _graphqlService.SearchCustomerByMetafieldCodeAsync(customerCode: exactAccount.Code.Trim());
                 if (customerCode == null)
                 {
-                    await CreateCustomerEmailAsync(exactAccount, "b2b-customer", logFilePath, sendWelcomeEmail);
-                    Console.WriteLine($"⚠️ Müşteri bulunamadı Shopify'da: {exactAccount.Email}, yeni müşteri oluşturuldu.");
+                    var created = await CreateCustomerEmailAsync(exactAccount, "b2b-customer", logFilePath, sendWelcomeEmail);
+                    Console.WriteLine($"⚠️ Müşteri bulunamadı Shopify'da: {exactAccount.Email}, yeni müşteri oluşturuldu (sonuç: {created}).");
+
+                    // Müşteri yeni oluşturuldu; tüm alanlar zaten yazıldı.
+                    // Devam edip PUT customers/null.json çağırmak 406 hatası verir.
+                    return created;
                 }
                 else
                 {
                     emailExists = customerCode.Id.ToString();
                 }
-
-                //return false;
             }
+
             string customerId = emailExists;
+            if (string.IsNullOrWhiteSpace(customerId))
+            {
+                Console.WriteLine($"❌ Shopify müşteri ID'si belirlenemedi: {exactAccount.Email}");
+                onError?.Invoke("Shopify müşteri ID'si bulunamadı (email ve customer_code ile eşleşme yok)");
+                if (!string.IsNullOrEmpty(logFilePath))
+                {
+                    await AppendToLogFileAsync(logFilePath, new
+                    {
+                        Timestamp = DateTimeOffset.Now,
+                        Action = "UpdateCustomer",
+                        Email = exactAccount.Email,
+                        Name = exactAccount.Name,
+                        Code = exactAccount.Code,
+                        Success = false,
+                        Error = "Shopify müşteri ID'si bulunamadı (email ve customer_code ile eşleşme yok)",
+                        ProcessType = "CustomerUpdate"
+                    });
+                }
+                return false;
+            }
             //Ülke kodunu düzenle
             var countryCode = ConvertToCountryCode(exactAccount.Country, exactAccount.CountryName);
             var validatedPhone = ValidatePhoneNumber(exactAccount.Phone);
@@ -154,6 +211,7 @@ public class ShopifyCustomerCrud
             if (!response.IsSuccessStatusCode)
             {
                 Console.WriteLine($"Hata: {responseContent}");
+                onError?.Invoke($"Shopify HTTP {(int)response.StatusCode}: {Truncate(responseContent, 500)}");
                 if (responseContent.Contains("phone"))
                 {
                     Console.WriteLine($"❌ Müşteri güncelleme başarısız - Geçersiz telefon numarası: {validatedPhone} için, telefon numarası boş bırakılıyor.");
@@ -212,6 +270,7 @@ public class ShopifyCustomerCrud
                     if (!response.IsSuccessStatusCode)
                     {
                         Console.WriteLine($"❌ Müşteri güncelleme başarısız (telefon boş) - Status: {response.StatusCode}");
+                        onError?.Invoke($"Telefonsuz tekrar denendi, yine başarısız - HTTP {(int)response.StatusCode}: {Truncate(responseContent, 500)}");
                         return false;
                     }
                     else

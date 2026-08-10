@@ -7,9 +7,9 @@ namespace ShopifyProductApp.Controllers
     [Route("api/[controller]")]
     public class SettingsController : ControllerBase
     {
-        private readonly SettingsService _settingsService;
+        private readonly ISettingsService _settingsService;
 
-        public SettingsController(SettingsService settingsService)
+        public SettingsController(ISettingsService settingsService)
         {
             _settingsService = settingsService;
         }
