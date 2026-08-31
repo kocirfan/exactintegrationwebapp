@@ -334,6 +334,16 @@ namespace ShopifyProductApp.Controllers
                     }
                 }
 
+                // Hiçbir ürün satırı Exact ürünüyle eşleşmediyse (örn. Bol'da katalog dışı satır, SKU boş)
+                // siparişi sadece kargo satırıyla göndermek yerine açık hata ile durdur.
+                if (salesOrderLines.Count == 0)
+                {
+                    _logger.LogError("❌ Sipariş {OrderName} (#{OrderNumber}): hiçbir satır Exact ürünüyle eşleşmedi, Exact'a gönderilmedi. Satırlar: {Lines}",
+                        shopifyOrder.Name, shopifyOrder.OrderNumber,
+                        string.Join(" | ", shopifyOrder.LineItems.Select(li => $"{li.Title} (SKU: '{li.Sku}')")));
+                    return (false, null, null);
+                }
+
                 // 🎁 Pickup indirimi varsa - yüzdeyi doğru hesapla
                 // Pickup indirimi, ürün indirimleri uygulandıktan SONRA kalan tutara uygulanır
                 // Örnek: 686.70€ (indirimli toplam) * %2 = 13.73€
@@ -703,7 +713,10 @@ namespace ShopifyProductApp.Controllers
                     WarehouseID = warehouseGuid,
                     SalesOrderLines = salesOrderLines,
                     // ShippingMethod = shippingMethodGuid,
-                    YourRef = referenceNumber,
+                    // Müşteri referansı varsa o; yoksa kanal siparişlerinin özel adı (örn. Bol: BOLC000DR1TW9).
+                    // Normal web siparişlerinde name "#1732" olduğu için eski davranış korunur (null).
+                    YourRef = referenceNumber
+                        ?? (shopifyOrder.Name != $"#{shopifyOrder.OrderNumber}" ? shopifyOrder.Name : null),
                     Salesperson = salespersonGuid,
 
                     // Amount değerlerini Exact hesaplasın

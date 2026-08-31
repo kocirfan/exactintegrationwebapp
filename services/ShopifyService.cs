@@ -2929,11 +2929,43 @@ public class ShopifyService
         var code = exactItem.GetValueOrDefault("Code")?.ToString()?.Trim();
         var barcode = exactItem.GetValueOrDefault("Barcode")?.ToString()?.Trim();
 
-        if (!string.IsNullOrWhiteSpace(exactId) && byExactId.TryGetValue(exactId, out var byIdMatch) && byIdMatch.Count > 0)
-            return (byIdMatch, "exact_product_id");
+        var idMatches = new List<ShopifyVariantRef>();
+        if (!string.IsNullOrWhiteSpace(exactId) && byExactId.TryGetValue(exactId, out var byIdMatch))
+            idMatches.AddRange(byIdMatch);
 
-        if (!string.IsNullOrWhiteSpace(code) && bySku.TryGetValue(code, out var bySkuMatch) && bySkuMatch.Count > 0)
-            return (bySkuMatch, "sku");
+        // exact_product_id metafield'ı ürün seviyesinde tutulduğu için birleştirilmiş
+        // (çok variant'lı) ürünlerde TÜM variantlar aynı Exact ID altında indekslenir.
+        // Eşleşme birden fazla FARKLI SKU içeriyorsa hangi variant'ın bu Exact ürününe
+        // ait olduğu belirsizdir: yalnızca SKU'su Exact koduyla eşleşen variantlar tutulur.
+        // Tek SKU'lu eşleşme (normal ürün veya Exact'ta kod değişikliği) aynen korunur.
+        var distinctSkuCount = idMatches
+            .Select(v => v.Sku)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        if (distinctSkuCount > 1)
+        {
+            idMatches = idMatches
+                .Where(v => !string.IsNullOrWhiteSpace(code) &&
+                            string.Equals(v.Sku?.Trim(), code, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        // ID eşleşmesine ek olarak aynı SKU'yu taşıyan variantlar da dahil edilir:
+        // metafield arşivlenmiş eski kopyayı gösterse bile aktif üründeki aynı SKU'lu
+        // variant güncel kalır (VariantId ile tekilleştirilir).
+        var combined = new List<ShopifyVariantRef>(idMatches);
+        if (!string.IsNullOrWhiteSpace(code) && bySku.TryGetValue(code, out var bySkuMatch))
+        {
+            foreach (var v in bySkuMatch)
+            {
+                if (!combined.Any(c => c.VariantId == v.VariantId))
+                    combined.Add(v);
+            }
+        }
+
+        if (combined.Count > 0)
+            return (combined, idMatches.Count > 0 ? "exact_product_id" : "sku");
 
         if (!string.IsNullOrWhiteSpace(barcode) && byBarcode.TryGetValue(barcode, out var byBarcodeMatch) && byBarcodeMatch.Count > 0)
             return (byBarcodeMatch, "barcode");

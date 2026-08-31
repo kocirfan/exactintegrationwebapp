@@ -124,15 +124,39 @@ namespace ShopifyProductApp.Controllers
 
 
 
+        // dryRun=true: Exact payload'ı hazırlanır ve döndürülür, Exact'a gönderilmez, DB'ye yazılmaz
+        // (test/önizleme: YourRef, Description, satırlar). Duplicate kontrolü de atlanır.
         [HttpGet("shopify-order/{orderId}")]
-        public async Task<IActionResult> GetShopifyOrderById(long orderId)
+        public async Task<IActionResult> GetShopifyOrderById(long orderId, [FromQuery] bool dryRun = false)
         {
-            
-            var order = await _shopifyOrderCrud.GetOrderByIdAsync(orderId);
+
+            var order = await _shopifyOrderCrud.GetOrderByIdAsync(orderId, dryRun);
             if (order == null)
             {
                 return NotFound(new { message = $"Shopify sipariş {orderId} bulunamadı" });
             }
+
+            if (dryRun)
+            {
+                var prepared = _shopifyOrderCrud.LastPreparedOrder;
+                return Ok(new
+                {
+                    dryRun = true,
+                    sentToExact = false,
+                    shopifyOrderId = order.Id,
+                    shopifyOrderName = order.Name,
+                    shopifyOrderNumber = order.OrderNumber,
+                    prepared = prepared != null,
+                    message = prepared != null
+                        ? "Payload hazırlandı, Exact'a gönderilmedi"
+                        : "Payload hazırlanamadı (müşteri/satır eşleşmedi) - uygulama loglarına bakın",
+                    yourRef = prepared?.YourRef,
+                    description = prepared?.Description,
+                    lineCount = prepared?.SalesOrderLines?.Count,
+                    exactOrder = prepared
+                });
+            }
+
             return Ok(order);
         }
 

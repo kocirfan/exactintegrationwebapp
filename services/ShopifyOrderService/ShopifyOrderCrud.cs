@@ -71,10 +71,14 @@ public class ShopifyOrderCrud
         return null;
     }
 
+    // Son hazırlanan Exact payload'ı (dry-run önizlemesi için; servis Scoped olduğu için istek başına)
+    public ExactOrder? LastPreparedOrder { get; private set; }
+
     // manuel olarak shopify sipariş getir ve Exact'a gönder.
     // Webhook akışıyla aynı korumaları uygular: daha önce işlendiyse tekrar göndermez,
     // başarılı gönderimi ProcessedOrders tablosuna yazar (monitoring listesinde görünür).
-    public async Task<ShopifyOrder?> GetOrderByIdAsync(long orderId)
+    // dryRun=true: duplicate kontrolü atlanır, payload hazırlanır ama Exact'a GÖNDERİLMEZ ve DB'ye yazılmaz.
+    public async Task<ShopifyOrder?> GetOrderByIdAsync(long orderId, bool dryRun = false)
     {
         var response = await _client.GetAsync($"orders/{orderId}.json");
         if (!response.IsSuccessStatusCode)
@@ -102,14 +106,14 @@ public class ShopifyOrderCrud
                 .AnyAsync(o => o.ShopifyOrderId == order.Id ||
                                (order.OrderNumber != 0 && o.ShopifyOrderNumber == order.OrderNumber));
 
-            if (alreadyProcessed)
+            if (alreadyProcessed && !dryRun)
             {
                 _logger.LogWarning("⚠️ Sipariş zaten işlenmiş, tekrar gönderilmedi: {OrderId} (#{OrderNumber})",
                     order.Id, order.OrderNumber);
                 return order;
             }
 
-            var (success, exactOrderId, exactOrderNumber) = await ProcessShopifyOrderToExact(order);
+            var (success, exactOrderId, exactOrderNumber) = await ProcessShopifyOrderToExact(order, dryRun);
 
             if (success)
             {
@@ -143,7 +147,7 @@ public class ShopifyOrderCrud
 
 
     // exact'a sipariş gönder
-    private async Task<(bool success, Guid? exactOrderId, string? exactOrderNumber)> ProcessShopifyOrderToExact(ShopifyOrder shopifyOrder)
+    private async Task<(bool success, Guid? exactOrderId, string? exactOrderNumber)> ProcessShopifyOrderToExact(ShopifyOrder shopifyOrder, bool dryRun = false)
     {
         try
         {
@@ -345,6 +349,16 @@ public class ShopifyOrderCrud
                 {
                     _logger.LogWarning("Ürün bulunamadı: {Title} (SKU: {Sku})", lineItem.Title, lineItem.Sku);
                 }
+            }
+
+            // Hiçbir ürün satırı Exact ürünüyle eşleşmediyse (örn. Bol'da katalog dışı satır, SKU boş)
+            // siparişi sadece kargo satırıyla göndermek yerine açık hata ile durdur.
+            if (salesOrderLines.Count == 0)
+            {
+                _logger.LogError("❌ Sipariş {OrderName} (#{OrderNumber}): hiçbir satır Exact ürünüyle eşleşmedi, Exact'a gönderilmedi. Satırlar: {Lines}",
+                    shopifyOrder.Name, shopifyOrder.OrderNumber,
+                    string.Join(" | ", shopifyOrder.LineItems.Select(li => $"{li.Title} (SKU: '{li.Sku}')")));
+                return (false, null, null);
             }
 
             // 🎁 Pickup indirimi varsa - yüzdeyi doğru hesapla
@@ -695,7 +709,10 @@ public class ShopifyOrderCrud
                 WarehouseID = warehouseGuid,
                 SalesOrderLines = salesOrderLines,
                 // ShippingMethod = shippingMethodGuid,
-                YourRef = referenceNumber,
+                // Müşteri referansı varsa o; yoksa kanal siparişlerinin özel adı (örn. Bol: BOLC000DR1TW9).
+                // Normal web siparişlerinde name "#1732" olduğu için eski davranış korunur (null).
+                YourRef = referenceNumber
+                    ?? (shopifyOrder.Name != $"#{shopifyOrder.OrderNumber}" ? shopifyOrder.Name : null),
                 Salesperson = salespersonGuid,
 
                 // Amount değerlerini Exact hesaplasın
@@ -714,6 +731,14 @@ public class ShopifyOrderCrud
                 hasPickupDiscount);
 
             _logger.LogInformation($"Sipariş hazırlandı - Satır: {salesOrderLines.Count}");
+
+            LastPreparedOrder = exactOrder;
+            if (dryRun)
+            {
+                _logger.LogInformation("🧪 DRY-RUN: Exact'a GÖNDERİLMEDİ. Description={Description}, YourRef={YourRef}, Satır={Lines}",
+                    exactOrder.Description, exactOrder.YourRef ?? "(boş)", salesOrderLines.Count);
+                return (false, null, null);
+            }
 
             // 4. ExactOnline'a gönder
             var (success, exactOrderId, exactOrderNumber) = await _exactService.CreateSalesOrderAsync(exactOrder);

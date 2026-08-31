@@ -110,11 +110,12 @@ public class ShopifyLineItem
     [JsonPropertyName("price")]
     public string Price { get; set; }
 
+    // Shopify'da özel/katalog dışı satırlarda (örn. bazı Bol siparişleri) veya ürün silindiyse null gelir
     [JsonPropertyName("variant_id")]
-    public long VariantId { get; set; }
+    public long? VariantId { get; set; }
 
     [JsonPropertyName("product_id")]
-    public long ProductId { get; set; }
+    public long? ProductId { get; set; }
 
      [JsonPropertyName("discount_allocations")]
     public List<DiscountAllocation> DiscountAllocations { get; set; } = new();
