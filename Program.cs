@@ -379,6 +379,7 @@ builder.Services.AddSingleton<ManualPriceSyncRunner>();
 // Müşteri sync logları + manuel müşteri senkronu tetikleyici (dashboard kullanır)
 builder.Services.AddSingleton<CustomerSyncLogService>();
 builder.Services.AddSingleton<ManualCustomerSyncRunner>();
+builder.Services.AddSingleton<CustomerTaxTagFixRunner>(); // tek seferlik tax_exempt + betaling-factuur düzeltmesi
 
 // Thread-Safe Background Services
 // Stok sync (günlük 09:30)

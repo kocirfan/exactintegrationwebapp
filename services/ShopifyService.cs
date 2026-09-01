@@ -116,9 +116,9 @@ public class ShopifyService
                     email = exactAccount.Email ?? "",
                     phone = exactAccount.Phone ?? "",
                     addresses = new[] { newAddress },
-                    tags = $"{exactAccount.ClassificationDescription},betaling-factuur",
+                    tags = CustomerTagRules.Build(exactAccount.ClassificationDescription, exactAccount.VATNumber),
                     note = $"Exact Online ID: {exactAccount.ID}\nCode: {exactAccount.Code}\nVAT: {exactAccount.VATNumber ?? "N/A"}\nLast Updated: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss}",
-                    tax_exempt = countryCode == "NL" ? false : true,
+                    tax_exempt = VatTaxRules.ShouldBeTaxExempt(exactAccount.VATNumber, countryCode),
                     metafields = new[]
                     {
                     new
@@ -516,9 +516,9 @@ public class ShopifyService
                         company = exactAccount.Name ?? ""
                     }
                 },
-                    tags = $"{exactAccount.ClassificationDescription},betaling-factuur",
+                    tags = CustomerTagRules.Build(exactAccount.ClassificationDescription, exactAccount.VATNumber),
                     note = $"Exact Online ID: {exactAccount.ID}\nVAT: {exactAccount.VATNumber ?? "N/A"}",
-                    tax_exempt = countryCode == "NL" ? false : true,
+                    tax_exempt = VatTaxRules.ShouldBeTaxExempt(exactAccount.VATNumber, countryCode),
                     metafields = new[]
                     {
                     new
@@ -683,9 +683,9 @@ public class ShopifyService
                         company = exactAccount.Name ?? ""
                     }
                 },
-                    tags = $"{exactAccount.ClassificationDescription},betaling-factuur",
+                    tags = CustomerTagRules.Build(exactAccount.ClassificationDescription, exactAccount.VATNumber),
                     note = $"Exact Online ID: {exactAccount.ID}\nVAT: {exactAccount.VATNumber ?? "N/A"}",
-                    tax_exempt = countryCode == "NL" ? false : true,
+                    tax_exempt = VatTaxRules.ShouldBeTaxExempt(exactAccount.VATNumber, countryCode),
                     metafields = new[]
                     {
                     new

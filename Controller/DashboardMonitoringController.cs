@@ -19,6 +19,7 @@ namespace ShopifyProductApp.Controllers
         private readonly ManualStockSyncRunner _stockSyncRunner;
         private readonly ManualPriceSyncRunner _priceSyncRunner;
         private readonly ManualCustomerSyncRunner _customerSyncRunner;
+        private readonly CustomerTaxTagFixRunner _taxTagFixRunner;
         private readonly ExactCustomerCrud _exactCustomerCrud;
         private readonly ShopifyCustomerCrud _shopifyCustomerCrud;
         private readonly CustomerSyncLogService _customerSyncLogService;
@@ -29,6 +30,7 @@ namespace ShopifyProductApp.Controllers
             ManualStockSyncRunner stockSyncRunner,
             ManualPriceSyncRunner priceSyncRunner,
             ManualCustomerSyncRunner customerSyncRunner,
+            CustomerTaxTagFixRunner taxTagFixRunner,
             ExactCustomerCrud exactCustomerCrud,
             ShopifyCustomerCrud shopifyCustomerCrud,
             CustomerSyncLogService customerSyncLogService,
@@ -38,6 +40,7 @@ namespace ShopifyProductApp.Controllers
             _stockSyncRunner = stockSyncRunner;
             _priceSyncRunner = priceSyncRunner;
             _customerSyncRunner = customerSyncRunner;
+            _taxTagFixRunner = taxTagFixRunner;
             _exactCustomerCrud = exactCustomerCrud;
             _shopifyCustomerCrud = shopifyCustomerCrud;
             _customerSyncLogService = customerSyncLogService;
@@ -422,6 +425,36 @@ namespace ShopifyProductApp.Controllers
                 timestamp = DateTime.Now
             });
         }
+
+        // ============ VERGİ / TAG DÜZELTMESİ (tek seferlik toplu) ============
+
+        /// <summary>
+        /// Shopify'daki TÜM müşteriler için tax_exempt + betaling-factuur tag'ini
+        /// VatTaxRules / CustomerTagRules'a göre düzeltir. Müşteri oluşturmaz, mail göndermez,
+        /// diğer alanlara ve diğer tag'lere dokunmaz.
+        /// Varsayılan dryRun=true: yalnızca ne değişeceğini hesaplar. Uygulamak için dryRun=false.
+        /// </summary>
+        [HttpPost("customer/tax-tags/fix")]
+        public IActionResult TriggerTaxTagFix([FromQuery] bool dryRun = true)
+        {
+            if (!_taxTagFixRunner.TryStart(dryRun))
+            {
+                return Conflict(new { error = "Vergi/tag düzeltmesi zaten çalışıyor", status = _taxTagFixRunner.GetStatus() });
+            }
+
+            _logger.LogInformation("🧾 Dashboard: vergi/tag düzeltmesi tetiklendi (dryRun: {DryRun})", dryRun);
+            return Accepted(new
+            {
+                message = dryRun ? "Dry-run başlatıldı (hiçbir şey yazılmayacak)" : "Vergi/tag düzeltmesi başlatıldı",
+                dryRun,
+                statusUrl = "/api/dashboard/customer/tax-tags/status?details=true"
+            });
+        }
+
+        /// <summary>Vergi/tag düzeltmesinin anlık durumu; details=true ile değişiklik listesi.</summary>
+        [HttpGet("customer/tax-tags/status")]
+        public IActionResult GetTaxTagFixStatus([FromQuery] bool details = false)
+            => Ok(_taxTagFixRunner.GetStatus(details));
 
         /// <summary>Müşteri senkron sonuçları (CustomerSyncLogs, sayfalı).</summary>
         [HttpGet("customer/results")]

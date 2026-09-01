@@ -44,6 +44,79 @@ public class ExactCustomerCrud
         _logger = logger;
     }
 
+    /// <summary>
+    /// Vergi/tag düzeltmesi için TÜM hesapları yalnızca gereken alanlarla çeker
+    /// (ID, Code, Email, Status, VATNumber, Country, CountryName). Hesap başına ek çağrı yapmaz.
+    /// </summary>
+    public async Task<List<Account>> GetAllCustomersLiteAsync()
+    {
+        var exactService = _serviceProvider.GetRequiredService<ExactService>();
+        var token = await exactService.GetValidToken();
+        if (token == null)
+        {
+            _logger.LogError("Token alınamadı");
+            return new List<Account>();
+        }
+
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var jsonOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = JsonNumberHandling.AllowReadingFromString
+        };
+
+        var all = new List<Account>();
+        const int top = 60;
+        int skip = 0;
+        string url = BuildUrl(skip);
+
+        while (!string.IsNullOrEmpty(url))
+        {
+            var response = await client.GetAsync(url);
+            var content = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+                throw new Exception($"Exact hesap listesi alınamadı ({(int)response.StatusCode}): {content}");
+
+            using var doc = JsonDocument.Parse(content);
+            var d = doc.RootElement.GetProperty("d");
+            var results = d.ValueKind == JsonValueKind.Array ? d : d.GetProperty("results");
+
+            int count = 0;
+            foreach (var element in results.EnumerateArray())
+            {
+                count++;
+                var account = JsonSerializer.Deserialize<Account>(element.GetRawText(), jsonOptions);
+                if (account != null) all.Add(account);
+            }
+
+            // Sayfalama: Exact __next verirse onu kullan, yoksa $skip ile devam et
+            string next = d.ValueKind == JsonValueKind.Object && d.TryGetProperty("__next", out var nextProp) && nextProp.ValueKind == JsonValueKind.String
+                ? nextProp.GetString()
+                : null;
+
+            if (!string.IsNullOrEmpty(next))
+                url = next;
+            else if (count < top)
+                url = null;
+            else
+            {
+                skip += top;
+                url = BuildUrl(skip);
+            }
+
+            if (url != null) await Task.Delay(200);
+        }
+
+        _logger.LogInformation("📋 Exact'tan {Count} hesap çekildi (lite)", all.Count);
+        return all;
+
+        string BuildUrl(int skipValue) =>
+            $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$select=ID,Code,Email,Status,VATNumber,Country,CountryName&$top={top}&$skip={skipValue}";
+    }
+
     /// Son 24 saatte güncellenen müşterileri getirir
     public async Task<List<Account>> GetAllUpdateCustomersAsync(int hours = 24)
     {

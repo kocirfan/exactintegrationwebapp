@@ -148,9 +148,9 @@ public class ShopifyCustomerCrud
                     email = exactAccount.Email ?? "",
                     phone = validatedPhone ?? "",
                     addresses = new[] { newAddress },
-                    tags = $"{exactAccount.ClassificationDescription},betaling-factuur",
+                    tags = CustomerTagRules.Build(exactAccount.ClassificationDescription, exactAccount.VATNumber),
                     note = $"Exact Online ID: {exactAccount.ID}\nCode: {exactAccount.Code}\nVAT: {exactAccount.VATNumber ?? "N/A"}\nLast Updated: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss}",
-                    tax_exempt = countryCode == "NL" ? false : true,
+                    tax_exempt = VatTaxRules.ShouldBeTaxExempt(exactAccount.VATNumber, countryCode),
                     metafields = new[]
                     {
                     new
@@ -225,9 +225,9 @@ public class ShopifyCustomerCrud
                             email = exactAccount.Email ?? "",
                             phone = "",
                             addresses = new[] { newAddress },
-                            tags = $"{exactAccount.ClassificationDescription},betaling-factuur",
+                            tags = CustomerTagRules.Build(exactAccount.ClassificationDescription, exactAccount.VATNumber),
                             note = $"Exact Online ID: {exactAccount.ID}\nCode: {exactAccount.Code}\nVAT: {exactAccount.VATNumber ?? "N/A"}\nLast Updated: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss}",
-                            tax_exempt = countryCode == "NL" ? false : true,
+                            tax_exempt = VatTaxRules.ShouldBeTaxExempt(exactAccount.VATNumber, countryCode),
                             metafields = new[]
                             {
                             new
@@ -344,9 +344,9 @@ public class ShopifyCustomerCrud
                         company = exactAccount.Name ?? ""
                     }
                 },
-                    tags = $"{exactAccount.ClassificationDescription},betaling-factuur",
+                    tags = CustomerTagRules.Build(exactAccount.ClassificationDescription, exactAccount.VATNumber),
                     note = $"Exact Online ID: {exactAccount.ID}\nVAT: {exactAccount.VATNumber ?? "N/A"}",
-                    tax_exempt = countryCode == "NL" ? false : true,
+                    tax_exempt = VatTaxRules.ShouldBeTaxExempt(exactAccount.VATNumber, countryCode),
                     metafields = new[]
                     {
                     new
@@ -454,9 +454,9 @@ public class ShopifyCustomerCrud
                                 company = exactAccount.Name ?? ""
                             }
                         },
-                            tags = $"{exactAccount.ClassificationDescription},betaling-factuur",
+                            tags = CustomerTagRules.Build(exactAccount.ClassificationDescription, exactAccount.VATNumber),
                             note = $"Exact Online ID: {exactAccount.ID}\nVAT: {exactAccount.VATNumber ?? "N/A"}",
-                            tax_exempt = countryCode == "NL" ? false : true,
+                            tax_exempt = VatTaxRules.ShouldBeTaxExempt(exactAccount.VATNumber, countryCode),
                             metafields = new[]
                             {
                             new
@@ -729,7 +729,89 @@ public class ShopifyCustomerCrud
 
 
     //  Ülke isimlerini 2 harfli koda çevir
-    private string ConvertToCountryCode(string countryCode, string countryName)
+    // ============ Vergi/tag toplu düzeltmesi için yardımcılar (CustomerTaxTagFixRunner) ============
+
+    /// <summary>Shopify müşterisinin vergi/tag düzeltmesi için gereken özet alanları.</summary>
+    public record ShopifyCustomerSummary(long Id, string Email, string Tags, bool TaxExempt, string Note);
+
+    /// <summary>
+    /// Shopify'daki TÜM müşterileri (id, email, tags, tax_exempt, note) sayfalayarak çeker.
+    /// </summary>
+    public async Task<List<ShopifyCustomerSummary>> GetAllCustomerSummariesAsync()
+    {
+        var result = new List<ShopifyCustomerSummary>();
+        string url = "customers.json?limit=250&fields=id,email,tags,tax_exempt,note";
+
+        while (!string.IsNullOrEmpty(url))
+        {
+            var response = await _client.GetAsync(url);
+            var content = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+                throw new Exception($"Shopify müşteri listesi alınamadı ({(int)response.StatusCode}): {Truncate(content, 300)}");
+
+            using var doc = JsonDocument.Parse(content);
+            foreach (var c in doc.RootElement.GetProperty("customers").EnumerateArray())
+            {
+                result.Add(new ShopifyCustomerSummary(
+                    c.GetProperty("id").GetInt64(),
+                    c.TryGetProperty("email", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null,
+                    c.TryGetProperty("tags", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : "",
+                    c.TryGetProperty("tax_exempt", out var x) && x.ValueKind == JsonValueKind.True,
+                    c.TryGetProperty("note", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null));
+            }
+
+            url = GetNextPageUrl(response);
+            if (url != null) await Task.Delay(500);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Yalnızca tax_exempt ve tags alanlarını günceller; başka hiçbir alana dokunmaz.
+    /// 429 alırsa 2 sn bekleyip bir kez daha dener.
+    /// </summary>
+    public async Task<(bool Success, string Error)> UpdateTaxExemptAndTagsAsync(long customerId, bool taxExempt, string tags)
+    {
+        var payload = JsonSerializer.Serialize(new { customer = new { id = customerId, tax_exempt = taxExempt, tags = tags ?? "" } });
+
+        for (int attempt = 1; attempt <= 2; attempt++)
+        {
+            var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+            var response = await _client.PutAsync($"customers/{customerId}.json", content);
+            if (response.IsSuccessStatusCode)
+                return (true, null);
+
+            var body = await response.Content.ReadAsStringAsync();
+            if ((int)response.StatusCode == 429 && attempt == 1)
+            {
+                await Task.Delay(2000);
+                continue;
+            }
+            return (false, $"{(int)response.StatusCode} {response.StatusCode}: {Truncate(body, 300)}");
+        }
+
+        return (false, "Bilinmeyen hata");
+    }
+
+    // Shopify REST sayfalama: Link header'ındaki rel="next" URL'i
+    private static string GetNextPageUrl(HttpResponseMessage response)
+    {
+        if (!response.Headers.TryGetValues("Link", out var values))
+            return null;
+
+        foreach (var part in string.Join(",", values).Split(','))
+        {
+            if (!part.Contains("rel=\"next\"")) continue;
+            var start = part.IndexOf('<') + 1;
+            var end = part.IndexOf('>');
+            if (start > 0 && end > start)
+                return part.Substring(start, end - start);
+        }
+        return null;
+    }
+
+    public static string ConvertToCountryCode(string countryCode, string countryName)
     {
         // Eğer zaten 2 harfli kod varsa, temizle ve kullan
         if (!string.IsNullOrEmpty(countryCode))
@@ -1265,9 +1347,9 @@ public class ShopifyCustomerCrud
     //                     company = exactAccount.Name ?? ""
     //                 }
     //             },
-    //                 tags = $"{exactAccount.ClassificationDescription},betaling-factuur",
+    //                 tags = CustomerTagRules.Build(exactAccount.ClassificationDescription, exactAccount.VATNumber),
     //                 note = $"Exact Online ID: {exactAccount.ID}\nVAT: {exactAccount.VATNumber ?? "N/A"}",
-    //                 tax_exempt = countryCode == "NL" ? false : true,
+    //                 tax_exempt = VatTaxRules.ShouldBeTaxExempt(exactAccount.VATNumber, countryCode),
     //                 metafields = new[]
     //                 {
     //                 new
