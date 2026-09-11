@@ -509,6 +509,8 @@ public class ShopifyOrderCrud
             }
 
             //adress kontrol
+            // Siparişin 'Leveren aan' adresi: eşleşen/oluşturulan Type=4 adresin GUID'i buraya yazılır
+            Guid? deliveryAddressId = null;
             bool addressesDiffer = IsBillingAddressDifferentFromShippingAddress(shopifyOrder);
             if (addressesDiffer)
             {
@@ -527,6 +529,7 @@ public class ShopifyOrderCrud
                             if (address.FullAddress == delivery.Address1 + ", " + delivery.Zip + ", " + delivery.City)
                             {
                                 address.IsMain = true;
+                                deliveryAddressId = address.Id;
                                 await _exactAddressCrud.UpdateAddress(address.Id.ToString(), address);
                                 await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
                                 _logger.LogInformation("   ✅ Exact'teki teslimat adresi Shopify adresi ile eşleşiyor.");
@@ -536,7 +539,7 @@ public class ShopifyOrderCrud
                         }
                         if (!addressFound)
                         {
-                            await CreateDeliveryAddress(delivery, customerId.Value.ToString());
+                            deliveryAddressId = await CreateDeliveryAddress(delivery, customerId.Value.ToString());
                         }
                         else
                         {
@@ -560,6 +563,7 @@ public class ShopifyOrderCrud
                         };
 
                         var createdAddress = await _exactAddressCrud.CreateAddress(newDeliveryAddress);
+                        deliveryAddressId = createdAddress?.Id;
                         await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
                         if (createdAddress != null)
                         {
@@ -589,6 +593,7 @@ public class ShopifyOrderCrud
                             if (address.FullAddress == delivery.Address1 + ", " + delivery.Zip + ", " + delivery.City)
                             {
                                 address.IsMain = true;
+                                deliveryAddressId = address.Id;
                                 await _exactAddressCrud.UpdateAddress(address.Id.ToString(), address);
                                 await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
                                 _logger.LogInformation("   ✅ Exact'teki teslimat adresi Shopify adresi ile eşleşiyor.");
@@ -598,7 +603,7 @@ public class ShopifyOrderCrud
                         }
                         if (!addressFound)
                         {
-                            await CreateDeliveryAddress(delivery, customerId.Value.ToString());
+                            deliveryAddressId = await CreateDeliveryAddress(delivery, customerId.Value.ToString());
                         }
                         else
                         {
@@ -622,6 +627,7 @@ public class ShopifyOrderCrud
                         };
 
                         var createdAddress = await _exactAddressCrud.CreateAddress(newDeliveryAddress);
+                        deliveryAddressId = createdAddress?.Id;
                         await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
                         if (createdAddress != null)
                         {
@@ -690,6 +696,18 @@ public class ShopifyOrderCrud
                     pickupDiscountPercentage, totalPickupDiscount);
             }
 
+            // Uw ref: müşteri referansı varsa o; yoksa kanal siparişlerinin özel adı (örn. Bol: BOLC000DR1TW9).
+            // Normal web siparişlerinde name "#1732" olduğu için boş kalır.
+            var yourRef = referenceNumber
+                ?? (shopifyOrder.Name != $"#{shopifyOrder.OrderNumber}" ? shopifyOrder.Name : null);
+
+            // Uw ref doluysa aynı değer açıklamanın devamına da yazılır (Exact Description ~60 karakterle sınırlı)
+            var orderDescription = yourRef == null
+                ? $"Shopify Order #{shopifyOrder.OrderNumber}"
+                : $"Shopify Order #{shopifyOrder.OrderNumber} - {yourRef}";
+            if (orderDescription.Length > 60)
+                orderDescription = orderDescription.Substring(0, 60);
+
             var exactOrder = new ExactOrder
             {
                 OrderedBy = customerId.Value,
@@ -702,17 +720,15 @@ public class ShopifyOrderCrud
                 InvoiceToContactPerson = contactPersonId,
                 OrderDate = orderDate,
                 DeliveryDate = defaultDeliveryDate,  // Pickup date veya varsayılan
-                Description = $"Shopify Order #{shopifyOrder.OrderNumber}",
+                DeliveryAddress = deliveryAddressId,  // Shopify teslimat adresi (Type=4) siparişin 'Leveren aan' adresi olur
+                Description = orderDescription,
                 Currency = _configuration["ExactOnline:DefaultCurrency"] ?? "EUR",
                 Status = 12,
                 Division = 553201,
                 WarehouseID = warehouseGuid,
                 SalesOrderLines = salesOrderLines,
                 // ShippingMethod = shippingMethodGuid,
-                // Müşteri referansı varsa o; yoksa kanal siparişlerinin özel adı (örn. Bol: BOLC000DR1TW9).
-                // Normal web siparişlerinde name "#1732" olduğu için eski davranış korunur (null).
-                YourRef = referenceNumber
-                    ?? (shopifyOrder.Name != $"#{shopifyOrder.OrderNumber}" ? shopifyOrder.Name : null),
+                YourRef = yourRef,
                 Salesperson = salespersonGuid,
 
                 // Amount değerlerini Exact hesaplasın
@@ -983,7 +999,7 @@ public class ShopifyOrderCrud
         }
     }
 
-    private async Task CreateDeliveryAddress(ShopifyAddress delivery, string customerId)
+    private async Task<Guid?> CreateDeliveryAddress(ShopifyAddress delivery, string customerId)
     {
         ExactAddress newDeliveryAddress = new ExactAddress
         {
@@ -999,9 +1015,9 @@ public class ShopifyOrderCrud
             Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
         };
 
-        var createdAddress = await _exactAddressCrud.CreateAddress(newDeliveryAddress);
+        var created = await _exactAddressCrud.CreateAddress(newDeliveryAddress);
         await Task.Delay(ADDRESS_OPERATION_DELAY_MS); // Adres oluşturulduktan sonra bekle
-        if (createdAddress != null)
+        if (created != null)
         {
             _logger.LogInformation("   ✅ Müşterinin teslimat adresi Exact'te oluşturuldu ve kullanılacak.");
         }
@@ -1010,6 +1026,8 @@ public class ShopifyOrderCrud
             _logger.LogWarning("   ⚠️ Müşterinin teslimat adresi oluşturulamadı.");
 
         }
+
+        return created?.Id;
     }
 
     private string NormalizeString(string? input)

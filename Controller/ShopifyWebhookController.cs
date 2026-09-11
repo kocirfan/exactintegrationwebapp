@@ -496,6 +496,8 @@ namespace ShopifyProductApp.Controllers
 
                 //adress kontrol
                 //fatura adresi
+                // Siparişin 'Leveren aan' adresi: eşleşen/oluşturulan Type=4 adresin GUID'i buraya yazılır
+                Guid? deliveryAddressId = null;
                 bool addressesDiffer = IsBillingAddressDifferentFromShippingAddress(shopifyOrder);
                 if (addressesDiffer)
                 {
@@ -518,6 +520,7 @@ namespace ShopifyProductApp.Controllers
                                 {
 
                                     address.IsMain = true;
+                                    deliveryAddressId = address.Id;
                                     await _exactAddressCrud.UpdateAddress(address.Id.ToString(), address);
                                     _logger.LogInformation("   ✅ Exact'teki fatura adresi Shopify fatura adresi ile eşleşiyor.");
                                     addressFound = true;
@@ -528,7 +531,7 @@ namespace ShopifyProductApp.Controllers
                             if (!addressFound)
                             {
                                 // Hiçbir adres eşleşmediyse yeni adres oluştur
-                                await CreateDeliveryAddress(delivery, customerId.Value.ToString());
+                                deliveryAddressId = await CreateDeliveryAddress(delivery, customerId.Value.ToString());
                             }
                             else
                             {
@@ -556,6 +559,7 @@ namespace ShopifyProductApp.Controllers
                             };
 
                             var createdAddress = await _exactAddressCrud.CreateAddress(newDeliveryAddress);
+                            deliveryAddressId = createdAddress?.Id;
                             if (createdAddress != null)
                             {
                                 _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te oluşturuldu ve kullanılacak.");
@@ -588,6 +592,7 @@ namespace ShopifyProductApp.Controllers
                                 {
 
                                     address.IsMain = true;
+                                    deliveryAddressId = address.Id;
                                     await _exactAddressCrud.UpdateAddress(address.Id.ToString(), address);
                                     _logger.LogInformation("   ✅ Exact'teki fatura adresi Shopify fatura adresi ile eşleşiyor.");
                                     addressFound = true;
@@ -598,7 +603,7 @@ namespace ShopifyProductApp.Controllers
                             if (!addressFound)
                             {
                                 // Hiçbir adres eşleşmediyse yeni adres oluştur
-                                await CreateDeliveryAddress(delivery, customerId.Value.ToString());
+                                deliveryAddressId = await CreateDeliveryAddress(delivery, customerId.Value.ToString());
                             }
                             else
                             {
@@ -626,6 +631,7 @@ namespace ShopifyProductApp.Controllers
                             };
 
                             var createdAddress = await _exactAddressCrud.CreateAddress(newDeliveryAddress);
+                            deliveryAddressId = createdAddress?.Id;
                             if (createdAddress != null)
                             {
                                 _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te oluşturuldu ve kullanılacak.");
@@ -694,6 +700,18 @@ namespace ShopifyProductApp.Controllers
                         pickupDiscountPercentage, totalPickupDiscount);
                 }
 
+                // Uw ref: müşteri referansı varsa o; yoksa kanal siparişlerinin özel adı (örn. Bol: BOLC000DR1TW9).
+                // Normal web siparişlerinde name "#1732" olduğu için boş kalır.
+                var yourRef = referenceNumber
+                    ?? (shopifyOrder.Name != $"#{shopifyOrder.OrderNumber}" ? shopifyOrder.Name : null);
+
+                // Uw ref doluysa aynı değer açıklamanın devamına da yazılır (Exact Description ~60 karakterle sınırlı)
+                var orderDescription = yourRef == null
+                    ? $"Shopify Order #{shopifyOrder.OrderNumber}"
+                    : $"Shopify Order #{shopifyOrder.OrderNumber} - {yourRef}";
+                if (orderDescription.Length > 60)
+                    orderDescription = orderDescription.Substring(0, 60);
+
                 var exactOrder = new ExactOrder
                 {
                     OrderedBy = customerId.Value,
@@ -706,17 +724,15 @@ namespace ShopifyProductApp.Controllers
                     InvoiceToContactPerson = contactPersonId,
                     OrderDate = orderDate,
                     DeliveryDate = defaultDeliveryDate,  // Pickup date veya varsayılan
-                    Description = $"Shopify Order #{shopifyOrder.OrderNumber}",
+                    DeliveryAddress = deliveryAddressId,  // Shopify teslimat adresi (Type=4) siparişin 'Leveren aan' adresi olur
+                    Description = orderDescription,
                     Currency = _configuration["ExactOnline:DefaultCurrency"] ?? "EUR",
                     Status = 12,
                     Division = 553201,
                     WarehouseID = warehouseGuid,
                     SalesOrderLines = salesOrderLines,
                     // ShippingMethod = shippingMethodGuid,
-                    // Müşteri referansı varsa o; yoksa kanal siparişlerinin özel adı (örn. Bol: BOLC000DR1TW9).
-                    // Normal web siparişlerinde name "#1732" olduğu için eski davranış korunur (null).
-                    YourRef = referenceNumber
-                        ?? (shopifyOrder.Name != $"#{shopifyOrder.OrderNumber}" ? shopifyOrder.Name : null),
+                    YourRef = yourRef,
                     Salesperson = salespersonGuid,
 
                     // Amount değerlerini Exact hesaplasın
@@ -952,7 +968,7 @@ namespace ShopifyProductApp.Controllers
         }
 
         //delivery address
-        private async Task CreateDeliveryAddress(ShopifyAddress delivery, String customerId)
+        private async Task<Guid?> CreateDeliveryAddress(ShopifyAddress delivery, String customerId)
         {
             ExactAddress newDeliveryAddress = new ExactAddress
             {
@@ -968,8 +984,8 @@ namespace ShopifyProductApp.Controllers
                 Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
             };
 
-            var createdAddress = await _exactAddressCrud.CreateAddress(newDeliveryAddress);
-            if (createdAddress != null)
+            var created = await _exactAddressCrud.CreateAddress(newDeliveryAddress);
+            if (created != null)
             {
                 _logger.LogInformation("   ✅ Müşterinin fatura adresi Exact'te oluşturuldu ve kullanılacak.");
             }
@@ -977,6 +993,8 @@ namespace ShopifyProductApp.Controllers
             {
                 _logger.LogWarning("   ⚠️ Müşterinin fatura adresi oluşturulamadı.");
             }
+
+            return created?.Id;
         }
 
         /// <summary>
