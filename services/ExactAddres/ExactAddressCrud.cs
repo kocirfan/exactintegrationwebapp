@@ -334,7 +334,10 @@ public class ExactAddressCrud
                 Country = string.IsNullOrEmpty(address.CountryCode) ? null : address.CountryCode,
                 Postcode = string.IsNullOrEmpty(address.PostalCode) ? null : address.PostalCode,
                 Type = address.Type ?? 3,
-                Main = address.IsMain
+                Main = address.IsMain,
+                // İlgili kişi: Exact adres bloğunda adresin hemen üstünde isim olarak görünür.
+                // Null ise JSON'a dahil edilmez (WhenWritingNull), diğer çağrı yerleri etkilenmez.
+                Contact = address.ContactId?.ToString("D")
             };
 
             var json = JsonSerializer.Serialize(addressDto, new JsonSerializerOptions
@@ -467,6 +470,11 @@ public class ExactAddressCrud
                 ["Type"] = address.Type,
                 ["Main"] = address.IsMain
             };
+
+            // İlgili kişi: Exact adres bloğunda adresin hemen üstünde isim olarak görünür.
+            // Yalnızca doluysa gönderilir; aksi halde Exact'teki mevcut bağlantı silinirdi.
+            if (address.ContactId.HasValue)
+                updateData["Contact"] = address.ContactId.Value.ToString("D");
 
             var json = JsonSerializer.Serialize(updateData);
             var content = new StringContent(json, Encoding.UTF8, "application/json");

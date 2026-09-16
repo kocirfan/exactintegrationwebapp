@@ -521,6 +521,8 @@ namespace ShopifyProductApp.Controllers
 
                                     address.IsMain = true;
                                     deliveryAddressId = address.Id;
+                                    // Mevcut adreste ilgili kişi yoksa bağla ki 'Leveren aan'da isim görünsün.
+                                    address.ContactId ??= await GetDeliveryContactId(delivery, customerId.Value);
                                     await _exactAddressCrud.UpdateAddress(address.Id.ToString(), address);
                                     _logger.LogInformation("   ✅ Exact'teki fatura adresi Shopify fatura adresi ile eşleşiyor.");
                                     addressFound = true;
@@ -593,6 +595,8 @@ namespace ShopifyProductApp.Controllers
 
                                     address.IsMain = true;
                                     deliveryAddressId = address.Id;
+                                    // Mevcut adreste ilgili kişi yoksa bağla ki 'Leveren aan'da isim görünsün.
+                                    address.ContactId ??= await GetDeliveryContactId(delivery, customerId.Value);
                                     await _exactAddressCrud.UpdateAddress(address.Id.ToString(), address);
                                     _logger.LogInformation("   ✅ Exact'teki fatura adresi Shopify fatura adresi ile eşleşiyor.");
                                     addressFound = true;
@@ -967,12 +971,54 @@ namespace ShopifyProductApp.Controllers
             }
         }
 
+        /// <summary>
+        /// Teslimat adresindeki kişiyi Exact'te ilgili kişi (contact) olarak bulur/oluşturur.
+        /// Dönen GUID adrese bağlanınca isim, siparişin 'Leveren aan' bloğunda adresin hemen üstünde görünür.
+        /// Kurumsal siparişlerde bu contact zaten EnsureCompanyContactAndInvoiceAddress ile üretilmiş olur;
+        /// GetOrCreateContactAsync mevcut kaydı bulup döndürdüğü için mükerrer contact oluşmaz.
+        /// </summary>
+        private async Task<Guid?> GetDeliveryContactId(ShopifyAddress delivery, Guid customerId)
+        {
+            var firstName = delivery?.FirstName?.Trim();
+            var lastName = delivery?.LastName?.Trim();
+
+            // Exact'te en az bir isim alanı zorunlu; ikisi de boşsa contact bağlanmaz.
+            if (string.IsNullOrWhiteSpace(firstName) && string.IsNullOrWhiteSpace(lastName))
+            {
+                _logger.LogWarning("   ⚠️ Teslimat adresinde isim yok, ilgili kişi bağlanmadı.");
+                return null;
+            }
+
+            try
+            {
+                // ShopifyAddress'te telefon/e-posta alanı yok; eşleştirme isim üzerinden yapılır.
+                var contactId = await _exactService.GetOrCreateContactAsync(
+                    customerId, firstName, lastName);
+
+                if (contactId != null)
+                    _logger.LogInformation("   👤 Teslimat adresi ilgili kişisi: {ContactId} ({FirstName} {LastName})",
+                        contactId, firstName, lastName);
+                else
+                    _logger.LogWarning("   ⚠️ Teslimat adresi için ilgili kişi oluşturulamadı.");
+
+                return contactId;
+            }
+            catch (Exception ex)
+            {
+                // İsim bağlanamazsa sipariş yine de yazılmalı; adres contact'sız oluşur.
+                _logger.LogError(ex, "   ⚠️ Teslimat ilgili kişisi hazırlanırken hata oluştu, adres isimsiz oluşturulacak.");
+                return null;
+            }
+        }
+
         //delivery address
         private async Task<Guid?> CreateDeliveryAddress(ShopifyAddress delivery, String customerId)
         {
+            var accountId = Guid.Parse(customerId);
+
             ExactAddress newDeliveryAddress = new ExactAddress
             {
-                AccountId = Guid.Parse(customerId),
+                AccountId = accountId,
                 Type = 4,
                 AddressLine1 = delivery.Address1 ?? "",
                 AddressLine2 = delivery.Address2 ?? "",
@@ -981,6 +1027,7 @@ namespace ShopifyProductApp.Controllers
                 IsMain = true,
                 CountryCode = delivery.CountryCode ?? "",
                 AccountName = $"{delivery.FirstName} {delivery.LastName}" ?? "",
+                ContactId = await GetDeliveryContactId(delivery, accountId),
                 Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
             };
 
