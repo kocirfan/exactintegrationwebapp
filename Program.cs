@@ -401,6 +401,11 @@ builder.Services.AddHostedService<NoDiscountTagSyncService>(); // Son 10dk'da mo
 // builder.Services.AddHostedService<ProductPriceAndTitleUpdate>();
 builder.Services.AddScoped<ProductPriceAndTitleUpdateService>();
 
+// Exact müşteri fiyat listeleri keşif servisi (SALT OKUNUR — hiçbir yere yazmaz)
+builder.Services.AddScoped<ShopifyProductApp.Services.ExactPriceList.ExactPriceListDiscoveryService>();
+builder.Services.AddScoped<ShopifyProductApp.Services.ExactPriceList.ShopifyB2BCatalogService>();
+builder.Services.AddScoped<ShopifyProductApp.Services.ExactPriceList.CustomerPriceSyncService>();
+
 // Uygulama başlangıcında bir kez tüm Exact ürünlerini Shopify'da toplu fiyat günceller
 //builder.Services.AddHostedService<BulkPriceSyncBackgroundService>(); // KAPATILDI: yerine NightlyPriceSyncBackgroundService (her gece tüm ürünler + PriceSyncLogs)
 
@@ -410,6 +415,16 @@ builder.Services.AddHostedService<NightlyPriceSyncBackgroundService>();
 // Her gece 04:30'da son 24 saatte değişen müşterileri senkronlar (CustomerSyncLogs'a yazar)
 builder.Services.AddHostedService<NightlyCustomerSyncBackgroundService>();
 builder.Services.AddSingleton<ITokenBlacklistService, TokenBlacklistService>();
+
+// 🏊 Bekleyen işlem havuzu + Exact token kesinti uyarısı (e-posta)
+// - Token yokken gelen siparişler PendingOperations tablosunda bekler, token gelince otomatik aktarılır
+// - Token 30 dk+ alınamazsa Notifications:Email:To adresine e-posta gider (Notifications:TokenAlert)
+// - nlmonitoringapp bunları /api/pending-operations uçlarından yönetir
+builder.Services.AddSingleton<ShopifyProductApp.Services.Notifications.EmailNotificationService>();
+builder.Services.AddSingleton<ShopifyProductApp.Services.PendingOperations.PendingOperationProcessor>();
+builder.Services.AddSingleton<ShopifyProductApp.Services.Notifications.TokenOutageMonitor>();
+builder.Services.AddScoped<ShopifyProductApp.Services.PendingOperations.PendingOperationService>();
+builder.Services.AddHostedService<ShopifyProductApp.Services.PendingOperations.PendingOperationProcessorService>();
 
 var app = builder.Build();
 
@@ -432,6 +447,18 @@ using (var scope = app.Services.CreateScope())
         else
         {
             Console.WriteLine("ℹ️ Auto migration devre dışı");
+        }
+
+        // PendingOperations tablosu: EnsureCreated mevcut DB'ye yeni tablo eklemez;
+        // migration uygulanmamış olsa bile tablo idempotent SQL ile garanti edilir (varsa dokunmaz).
+        try
+        {
+            await ShopifyProductApp.Data.PendingOperationsSchema.EnsureTableAsync(dbContext);
+            Console.WriteLine("✅ PendingOperations tablosu hazır");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ PendingOperations tablosu oluşturulamadı: {ex.Message}");
         }
 
         // İlk token durumu kontrolü

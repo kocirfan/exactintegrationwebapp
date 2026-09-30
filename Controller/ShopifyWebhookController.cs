@@ -5,6 +5,8 @@ using Microsoft.Extensions.Caching.Memory;
 using ShopifyProductApp.Data;
 using Microsoft.EntityFrameworkCore;
 using System.Reflection;
+using ShopifyProductApp.Services.PendingOperations;
+using ShopifyProductApp.Services.Notifications;
 
 
 namespace ShopifyProductApp.Controllers
@@ -22,13 +24,16 @@ namespace ShopifyProductApp.Controllers
         private readonly ApplicationDbContext _dbContext; // ← Ekle
         private readonly AddressMatchingService _addressMatchingService;
         private readonly string _failedOrdersLogPath;
+        private readonly PendingOperationService _pendingOperations; // bekleyen işlem havuzu
+        private readonly TokenOutageMonitor _tokenMonitor;           // Exact token müsait mi?
 
 
         public ShopifyWebhookController(
             ExactService exactService,
             ILogger<ShopifyWebhookController> logger,
             ExactAddressCrud exactAddressCrud,
-            IConfiguration configuration, IMemoryCache cache, ApplicationDbContext dbContext, AddressMatchingService addressMatchingService)
+            IConfiguration configuration, IMemoryCache cache, ApplicationDbContext dbContext, AddressMatchingService addressMatchingService,
+            PendingOperationService pendingOperations, TokenOutageMonitor tokenMonitor)
         {
             _exactService = exactService;
             _logger = logger;
@@ -37,6 +42,8 @@ namespace ShopifyProductApp.Controllers
             _cache = cache;
             _dbContext = dbContext;
             _addressMatchingService = addressMatchingService;
+            _pendingOperations = pendingOperations;
+            _tokenMonitor = tokenMonitor;
             
             // Failed orders log dosya yolu
             var logDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
@@ -80,6 +87,24 @@ namespace ShopifyProductApp.Controllers
 
                     string lockKey = $"lock_order_{shopifyOrder.Id}";
 
+                    // 🏊 Havuz kontrolü: sipariş zaten havuzda bekliyor / işleniyorsa tekrar ele alma
+                    if (await IsOrderInPendingPool(shopifyOrder.Id))
+                    {
+                        _logger.LogWarning("⏸️ Sipariş bekleme havuzunda, webhook atlandı: {OrderId}", shopifyOrder.Id);
+                        _cache.Remove(lockKey);
+                        return Ok();
+                    }
+
+                    // 🔑 Token kontrolü: Exact token yok / geçersizse siparişi havuza al,
+                    // token geri geldiğinde PendingOperationProcessor otomatik aktarır
+                    if (!await IsExactTokenAvailable())
+                    {
+                        _logger.LogWarning("🔑 Exact token yok, sipariş havuza alınıyor: {OrderId}", shopifyOrder.Id);
+                        await EnqueueOrderToPool(shopifyOrder, body, "Exact token yok veya geçersiz", PendingOperationStatus.Pending);
+                        _cache.Remove(lockKey);
+                        return Ok();
+                    }
+
                     // 🔐 ÖNCE DB'ye placeholder kaydet (Exact Order ID olmadan)
                     // Bu, duplicate gönderimi engelleyecek
                     var dbSaveSuccess = await ReserveOrderInDatabase(shopifyOrder.Id, shopifyOrder.OrderNumber);
@@ -99,6 +124,9 @@ namespace ShopifyProductApp.Controllers
                         // ✅ Exact Order ID ile DB kaydını güncelle
                         await UpdateOrderWithExactDetails(shopifyOrder.Id, exactOrderId, exactOrderNumber);
 
+                        // 🏊 Havuzda eski bir kaydı varsa (ör. daha önce Failed) tamamlandı olarak işaretle
+                        await MarkPoolCompleted(shopifyOrder.Id, exactOrderId, exactOrderNumber);
+
                         // 🔓 Lock'u temizle
                         _cache.Remove(lockKey);
 
@@ -114,6 +142,14 @@ namespace ShopifyProductApp.Controllers
 
                         // Başarısız sipariş için DB kaydını sil (tekrar denenebilsin)
                         await RemoveOrderFromDatabase(shopifyOrder.Id);
+
+                        // 🏊 Havuza yaz: token bu sırada gittiyse Pending (token gelince otomatik tekrar),
+                        // değilse Failed (panelden manuel tekrar)
+                        var tokenStillAvailable = await IsExactTokenAvailable();
+                        await EnqueueOrderToPool(shopifyOrder, body,
+                            tokenStillAvailable ? "Exact'a gönderim başarısız" : "Exact token gönderim sırasında kayboldu",
+                            tokenStillAvailable ? PendingOperationStatus.Failed : PendingOperationStatus.Pending,
+                            "ExactOnline'a gönderme başarısız (ayrıntı uygulama loglarında / FailedOrders.log)");
 
                         // 🔓 Lock'u temizle
                         _cache.Remove(lockKey);
@@ -132,6 +168,10 @@ namespace ShopifyProductApp.Controllers
                     if (shopifyOrder != null)
                     {
                         await LogFailedOrder(shopifyOrder.Id, shopifyOrder.OrderNumber, ex.Message);
+
+                        // 🏊 Havuza Failed olarak yaz (panelden görünsün / tekrar denenebilsin)
+                        try { _dbContext.ChangeTracker.Clear(); } catch { /* ignore */ }
+                        await EnqueueOrderToPool(shopifyOrder, body, "Webhook işlenirken beklenmeyen hata", PendingOperationStatus.Failed, ex.Message);
                     }
                 }
                 catch { /* Ignore parse errors */ }
@@ -1215,6 +1255,64 @@ namespace ShopifyProductApp.Controllers
             catch (Exception ex)
             {
                 _logger.LogError("❌ DB silme hatası: {Error}", ex.Message);
+            }
+        }
+
+        // ===================== Bekleyen işlem havuzu (token yokken) =====================
+        // Bu yardımcılar hata durumunda ESKİ davranışı bozmaz ("fail-open"):
+        // havuz/token kontrolü çalışmazsa sipariş eskisi gibi doğrudan Exact'a gönderilmeye çalışılır.
+
+        private async Task<bool> IsOrderInPendingPool(long orderId)
+        {
+            try
+            {
+                return await _pendingOperations.IsQueuedAsync(orderId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("❌ Havuz kontrolü hatası ({OrderId}): {Error}", orderId, ex.Message);
+                return false;
+            }
+        }
+
+        private async Task<bool> IsExactTokenAvailable()
+        {
+            try
+            {
+                return await _tokenMonitor.IsTokenAvailableAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("❌ Token kontrolü hatası: {Error}", ex.Message);
+                return true; // kontrol edilemiyorsa eski davranış: göndermeyi dene
+            }
+        }
+
+        private async Task EnqueueOrderToPool(ShopifyOrder order, string body, string reason, string status, string error = null)
+        {
+            try
+            {
+                await _pendingOperations.EnqueueOrderAsync(
+                    order.Id, order.OrderNumber, order.Name, body, reason,
+                    PendingOperationSources.Webhook, status, error);
+                _logger.LogWarning("🏊 Sipariş havuza yazıldı: {OrderId} (#{OrderNumber}) → {Status}: {Reason}",
+                    order.Id, order.OrderNumber, status, reason);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("❌ Sipariş havuza yazılamadı ({OrderId}): {Error}", order.Id, ex.Message);
+            }
+        }
+
+        private async Task MarkPoolCompleted(long orderId, Guid? exactOrderId, string exactOrderNumber)
+        {
+            try
+            {
+                await _pendingOperations.MarkCompletedAsync(orderId, exactOrderId, exactOrderNumber, "Webhook ile aktarıldı");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("❌ Havuz kaydı tamamlandı yapılamadı ({OrderId}): {Error}", orderId, ex.Message);
             }
         }
 

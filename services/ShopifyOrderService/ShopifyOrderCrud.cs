@@ -146,6 +146,109 @@ public class ShopifyOrderCrud
     }
 
 
+    /// <summary>
+    /// Havuz işlemcisi için: siparişi Shopify'dan taze çeker, Exact'a aktarır ve sonucu döner.
+    /// GetOrderByIdAsync ile aynı korumalar (ProcessedOrders duplicate kontrolü, başarıda DB kaydı);
+    /// ek olarak Shopify'da iptal edilmiş siparişleri aktarmaz (Skipped=true).
+    /// Mevcut GetOrderByIdAsync akışına dokunulmadı.
+    /// </summary>
+    public async Task<OrderTransferResult> TransferOrderToExactAsync(long orderId)
+    {
+        var result = new OrderTransferResult();
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _client.GetAsync($"orders/{orderId}.json");
+        }
+        catch (Exception ex)
+        {
+            result.Error = $"Shopify'a erişilemedi: {ex.Message}";
+            return result;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            result.Error = $"Shopify sipariş getirilemedi (HTTP {(int)response.StatusCode})";
+            return result;
+        }
+
+        var content = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(content);
+        if (!doc.RootElement.TryGetProperty("order", out var orderElement))
+        {
+            result.Error = "Shopify yanıtında 'order' alanı yok";
+            return result;
+        }
+
+        var order = JsonSerializer.Deserialize<ShopifyOrder>(orderElement.GetRawText(), _jsonOptions);
+        if (order == null)
+        {
+            result.Error = "Shopify siparişi ayrıştırılamadı";
+            return result;
+        }
+
+        result.ShopifyOrderNumber = order.OrderNumber;
+        result.ShopifyOrderName = order.Name;
+
+        if (!string.IsNullOrEmpty(order.CancelledAt))
+        {
+            result.Skipped = true;
+            result.Error = $"Sipariş Shopify'da iptal edilmiş ({order.CancelledAt}), Exact'a aktarılmadı";
+            return result;
+        }
+
+        using var scope = _serviceProvider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ShopifyProductApp.Data.ApplicationDbContext>();
+
+        var processed = await db.ProcessedOrders
+            .FirstOrDefaultAsync(o => o.ShopifyOrderId == order.Id ||
+                                      (order.OrderNumber != 0 && o.ShopifyOrderNumber == order.OrderNumber));
+        if (processed != null)
+        {
+            result.AlreadyProcessed = true;
+            result.ExactOrderGuid = processed.ExactOrderGuid;
+            result.ExactOrderNumber = processed.ExactOrderId;
+            _logger.LogWarning("⚠️ Havuz: sipariş zaten işlenmiş, tekrar gönderilmedi: {OrderId} (#{OrderNumber})",
+                order.Id, order.OrderNumber);
+            return result;
+        }
+
+        var (success, exactOrderId, exactOrderNumber) = await ProcessShopifyOrderToExact(order, dryRun: false);
+        if (!success)
+        {
+            result.Error = "Exact'a gönderim başarısız (ayrıntı uygulama loglarında)";
+            return result;
+        }
+
+        result.Success = true;
+        result.ExactOrderGuid = exactOrderId;
+        result.ExactOrderNumber = exactOrderNumber;
+
+        try
+        {
+            db.ProcessedOrders.Add(new ShopifyProductApp.Models.ProcessedOrder
+            {
+                ShopifyOrderId = order.Id,
+                ShopifyOrderNumber = order.OrderNumber,
+                ProcessedAt = DateTime.UtcNow,
+                ExactOrderId = exactOrderNumber,
+                ExactOrderGuid = exactOrderId
+            });
+            await db.SaveChangesAsync();
+            _logger.LogInformation("💾 Havuzdan gönderilen sipariş DB'ye kaydedildi: {OrderId} → Exact {ExactOrderNumber}",
+                order.Id, exactOrderNumber);
+        }
+        catch (Exception ex)
+        {
+            // Sipariş Exact'a gitti; DB yazımı başarısızsa bunu sonuca not düş ama başarıyı koru
+            _logger.LogError("❌ Sipariş DB'ye kaydedilemedi ({OrderId}): {Error}", order.Id, ex.Message);
+            result.Error = $"Exact'a aktarıldı ama ProcessedOrders'a yazılamadı: {ex.Message}";
+        }
+
+        return result;
+    }
+
     // exact'a sipariş gönder
     private async Task<(bool success, Guid? exactOrderId, string? exactOrderNumber)> ProcessShopifyOrderToExact(ShopifyOrder shopifyOrder, bool dryRun = false)
     {
@@ -1083,4 +1186,19 @@ public class ShopifyOrderCrud
 
         return input.Trim().ToLowerInvariant();
     }
+}
+
+/// <summary>TransferOrderToExactAsync sonucu (havuz işlemcisi kullanır).</summary>
+public class OrderTransferResult
+{
+    public bool Success { get; set; }
+    /// <summary>ProcessedOrders'da zaten kayıt vardı; tekrar gönderilmedi.</summary>
+    public bool AlreadyProcessed { get; set; }
+    /// <summary>Gönderilmedi ve gönderilmemeli (ör. Shopify'da iptal edilmiş).</summary>
+    public bool Skipped { get; set; }
+    public string Error { get; set; }
+    public Guid? ExactOrderGuid { get; set; }
+    public string ExactOrderNumber { get; set; }
+    public long? ShopifyOrderNumber { get; set; }
+    public string ShopifyOrderName { get; set; }
 }

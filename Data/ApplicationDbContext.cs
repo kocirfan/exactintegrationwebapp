@@ -15,6 +15,7 @@ namespace ShopifyProductApp.Data
         public DbSet<StockSyncLog> StockSyncLogs { get; set; }
         public DbSet<PriceSyncLog> PriceSyncLogs { get; set; }
         public DbSet<CustomerSyncLog> CustomerSyncLogs { get; set; }
+        public DbSet<PendingOperation> PendingOperations { get; set; } // bekleyen işlem havuzu (token yokken aktarılamayan siparişler)
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -49,6 +50,14 @@ namespace ShopifyProductApp.Data
                 entity.HasIndex(e => e.UpdatedAt);
                 entity.Property(e => e.OldPrice).HasColumnType("decimal(18,2)");
                 entity.Property(e => e.NewPrice).HasColumnType("decimal(18,2)");
+            });
+
+            // PendingOperation (bekleyen işlem havuzu) konfigürasyonu
+            modelBuilder.Entity<PendingOperation>(entity =>
+            {
+                entity.HasIndex(e => e.ShopifyOrderId).IsUnique(); // bir sipariş havuzda bir kez
+                entity.HasIndex(e => e.Status);
+                entity.HasIndex(e => e.CreatedAt);
             });
 
             // CustomerSyncLog konfigürasyonu

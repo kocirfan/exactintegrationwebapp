@@ -37,6 +37,10 @@ public class ShopifyOrder
     [JsonPropertyName("fulfillment_status")]
     public string FulfillmentStatus { get; set; }
 
+    // Shopify'da iptal edilmiş siparişlerde dolu gelir; havuzdan geç işlenen siparişlerde kontrol edilir
+    [JsonPropertyName("cancelled_at")]
+    public string CancelledAt { get; set; }
+
     [JsonPropertyName("name")]
     public string Name { get; set; }
 

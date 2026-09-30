@@ -2,6 +2,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
+using ShopifyProductApp.Services.Notifications;
 
 namespace ShopifyProductApp.Services
 {
@@ -10,14 +11,17 @@ namespace ShopifyProductApp.Services
         private readonly IServiceProvider _serviceProvider;
         private readonly ILogger<TokenRefreshBackgroundService> _logger;
         private readonly TimeSpan _checkInterval;
+        private readonly TokenOutageMonitor _outageMonitor;
 
         public TokenRefreshBackgroundService(
             IServiceProvider serviceProvider,
             ILogger<TokenRefreshBackgroundService> logger,
-            IConfiguration configuration)
+            IConfiguration configuration,
+            TokenOutageMonitor outageMonitor)
         {
             _serviceProvider = serviceProvider;
             _logger = logger;
+            _outageMonitor = outageMonitor;
 
             var intervalStr = configuration["App:BackgroundServices:TokenRefreshInterval"] ?? "00:03:00";
             _checkInterval = TimeSpan.TryParse(intervalStr, out var interval) 
@@ -53,7 +57,11 @@ namespace ShopifyProductApp.Services
                     {
                         _logger.LogWarning("⚠️ Token yenileniyor...");
                         await tokenManager.RefreshTokenIfNeededAsync();
+                        health = await tokenManager.GetTokenHealthAsync();
                     }
+
+                    // Kesinti takibi: token 30 dk+ alınamazsa e-posta uyarısı, geri gelince havuzu tetikle
+                    await _outageMonitor.CheckAsync(health);
                 }
                 catch (Exception ex)
                 {
