@@ -14,63 +14,86 @@ namespace ShopifyProductApp.Services.Notifications
 
     /// <summary>
     /// Basit SMTP gönderici (System.Net.Mail — hollandaemailservice ile aynı yaklaşım).
-    /// Ayarlar appsettings.json → Notifications:Email. Ayar eksikse IsConfigured=false döner
-    /// ve gönderim denenmez; sorun ConfigurationProblem alanında panelde görünür.
+    ///
+    /// Ayarlar HER gönderimde appsettings.json → Notifications:Email'den okunur; appsettings
+    /// reloadOnChange ile yüklendiği için ayar değişikliği restart gerektirmez.
+    /// Ayar eksikse IsConfigured=false döner ve gönderim denenmez; sorun ConfigurationProblem
+    /// alanında panelde görünür.
+    ///
+    /// Not: relay.mailarsivi.com 587'de STARTTLS sunmuyor → EnableSsl=false olmalı
+    /// (aksi halde "Server does not support secure connections" hatası alınır).
     /// </summary>
     public class EmailNotificationService
     {
+        private readonly IConfiguration _configuration;
         private readonly ILogger<EmailNotificationService> _logger;
-        private readonly bool _enabled;
-        private readonly string _host;
-        private readonly int _port;
-        private readonly bool _enableSsl;
-        private readonly string _username;
-        private readonly string _password;
-        private readonly string _fromEmail;
-        private readonly string _fromName;
-        private readonly string _to;
+
+        private sealed class EmailSettings
+        {
+            public bool Enabled;
+            public string Host;
+            public int Port;
+            public bool EnableSsl;
+            public string Username;
+            public string Password;
+            public string FromEmail;
+            public string FromName;
+            public string To;
+
+            public string Problem =>
+                !Enabled ? "Notifications:Email:Enabled = false"
+                : string.IsNullOrWhiteSpace(Host) ? "Notifications:Email:SmtpHost boş"
+                : string.IsNullOrWhiteSpace(FromEmail) ? "Notifications:Email:FromEmail boş"
+                : string.IsNullOrWhiteSpace(To) ? "Notifications:Email:To boş"
+                : (!string.IsNullOrWhiteSpace(Username) && string.IsNullOrEmpty(Password)) ? "Notifications:Email:Password boş"
+                : null;
+
+            public bool IsConfigured => Problem == null;
+        }
 
         public EmailSendResult LastResult { get; private set; }
 
-        public bool Enabled => _enabled;
-        public string Recipient => _to;
-
-        public bool IsConfigured => ConfigurationProblem == null;
-
-        public string ConfigurationProblem =>
-            !_enabled ? "Notifications:Email:Enabled = false"
-            : string.IsNullOrWhiteSpace(_host) ? "Notifications:Email:SmtpHost boş"
-            : string.IsNullOrWhiteSpace(_fromEmail) ? "Notifications:Email:FromEmail boş"
-            : string.IsNullOrWhiteSpace(_to) ? "Notifications:Email:To boş"
-            : (!string.IsNullOrWhiteSpace(_username) && string.IsNullOrEmpty(_password)) ? "Notifications:Email:Password boş"
-            : null;
+        public bool Enabled => Load().Enabled;
+        public string Recipient => Load().To;
+        public bool IsConfigured => Load().IsConfigured;
+        public string ConfigurationProblem => Load().Problem;
 
         public EmailNotificationService(IConfiguration configuration, ILogger<EmailNotificationService> logger)
         {
+            _configuration = configuration;
             _logger = logger;
 
-            var section = configuration.GetSection("Notifications:Email");
-            _enabled = bool.TryParse(section["Enabled"], out var enabled) && enabled;
-            _host = section["SmtpHost"];
-            _port = int.TryParse(section["SmtpPort"], out var port) ? port : 587;
-            _enableSsl = !bool.TryParse(section["EnableSsl"], out var ssl) || ssl;
-            _username = section["Username"];
-            _password = section["Password"];
-            _fromEmail = section["FromEmail"];
-            _fromName = section["FromName"];
-            _to = section["To"];
+            var cfg = Load();
+            _logger.LogInformation("📧 E-posta bildirimi: {State} (alıcı: {To}, sunucu: {Host}:{Port}, ssl: {Ssl})",
+                cfg.IsConfigured ? "hazır" : "yapılandırılmadı — " + cfg.Problem,
+                cfg.To ?? "-", cfg.Host ?? "-", cfg.Port, cfg.EnableSsl);
+        }
 
-            _logger.LogInformation("📧 E-posta bildirimi: {State} (alıcı: {To})",
-                IsConfigured ? "hazır" : "yapılandırılmadı — " + ConfigurationProblem, _to ?? "-");
+        private EmailSettings Load()
+        {
+            var section = _configuration.GetSection("Notifications:Email");
+            return new EmailSettings
+            {
+                Enabled = bool.TryParse(section["Enabled"], out var enabled) && enabled,
+                Host = section["SmtpHost"],
+                Port = int.TryParse(section["SmtpPort"], out var port) ? port : 587,
+                EnableSsl = !bool.TryParse(section["EnableSsl"], out var ssl) || ssl, // ayar yoksa varsayılan: SSL açık
+                Username = section["Username"],
+                Password = section["Password"],
+                FromEmail = section["FromEmail"],
+                FromName = section["FromName"],
+                To = section["To"]
+            };
         }
 
         public async Task<EmailSendResult> SendAsync(string subject, string body)
         {
+            var cfg = Load();
             var result = new EmailSendResult { At = DateTime.UtcNow, Subject = subject };
 
-            if (!IsConfigured)
+            if (!cfg.IsConfigured)
             {
-                result.Error = "E-posta ayarları eksik: " + ConfigurationProblem;
+                result.Error = "E-posta ayarları eksik: " + cfg.Problem;
                 LastResult = result;
                 _logger.LogWarning("📧 E-posta gönderilmedi: {Error}", result.Error);
                 return result;
@@ -78,28 +101,28 @@ namespace ShopifyProductApp.Services.Notifications
 
             try
             {
-                using var client = new SmtpClient(_host, _port)
+                using var client = new SmtpClient(cfg.Host, cfg.Port)
                 {
-                    EnableSsl = _enableSsl,
+                    EnableSsl = cfg.EnableSsl,
                     Timeout = 30000,
                     DeliveryMethod = SmtpDeliveryMethod.Network,
                     UseDefaultCredentials = false
                 };
-                if (!string.IsNullOrEmpty(_username))
+                if (!string.IsNullOrEmpty(cfg.Username))
                 {
-                    client.Credentials = new NetworkCredential(_username, _password);
+                    client.Credentials = new NetworkCredential(cfg.Username, cfg.Password);
                 }
 
                 using var message = new MailMessage
                 {
-                    From = new MailAddress(_fromEmail, string.IsNullOrWhiteSpace(_fromName) ? _fromEmail : _fromName),
+                    From = new MailAddress(cfg.FromEmail, string.IsNullOrWhiteSpace(cfg.FromName) ? cfg.FromEmail : cfg.FromName),
                     Subject = subject,
                     Body = body,
                     IsBodyHtml = false,
                     BodyEncoding = Encoding.UTF8,
                     SubjectEncoding = Encoding.UTF8
                 };
-                foreach (var to in _to.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries))
+                foreach (var to in cfg.To.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries))
                 {
                     message.To.Add(to.Trim());
                 }
@@ -107,12 +130,13 @@ namespace ShopifyProductApp.Services.Notifications
                 await client.SendMailAsync(message);
 
                 result.Success = true;
-                _logger.LogInformation("📧 E-posta gönderildi: \"{Subject}\" → {To}", subject, _to);
+                _logger.LogInformation("📧 E-posta gönderildi: \"{Subject}\" → {To}", subject, cfg.To);
             }
             catch (Exception ex)
             {
                 result.Error = ex.Message;
-                _logger.LogError(ex, "❌ E-posta gönderilemedi: \"{Subject}\"", subject);
+                _logger.LogError(ex, "❌ E-posta gönderilemedi: \"{Subject}\" ({Host}:{Port}, ssl: {Ssl})",
+                    subject, cfg.Host, cfg.Port, cfg.EnableSsl);
             }
 
             LastResult = result;
