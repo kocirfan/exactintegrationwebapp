@@ -340,6 +340,8 @@ builder.Services.AddScoped<ShopifyCustomerCrud>(serviceProvider =>
         serviceProvider: serviceProvider
     );
 });
+// bol.com siparişlerini tek Exact carisine yönlendirir (webhook + ShopifyOrderCrud)
+builder.Services.AddScoped<BolOrderRouter>();
 builder.Services.AddScoped<ShopifyOrderCrud>(serviceProvider =>
 {
     var configuration = serviceProvider.GetRequiredService<IConfiguration>();

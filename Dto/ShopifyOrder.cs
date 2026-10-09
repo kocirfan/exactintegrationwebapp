@@ -44,6 +44,10 @@ public class ShopifyOrder
     [JsonPropertyName("name")]
     public string Name { get; set; }
 
+    // Siparişin geldiği kanal; Market Sync ile gelen bol.com siparişlerinde "bol"
+    [JsonPropertyName("source_name")]
+    public string SourceName { get; set; }
+
     [JsonPropertyName("order_number")]
     public long OrderNumber { get; set; }
 

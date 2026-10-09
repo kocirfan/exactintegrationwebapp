@@ -691,6 +691,79 @@ public class ExactAddressCrud
     }
 
     //delivery address
+    /// <summary>
+    /// Çok adresli hesaplarda (örn. bol.com tek cari) teslimat adresini sunucu tarafında filtreleyerek arar:
+    /// Account + Type=4 + Postcode + AddressLine1 (+ varsa Contact). İlk sayfa sınırına takılmaz.
+    /// Bulunamazsa veya hata olursa null döner (çağıran yeni adres oluşturur).
+    /// </summary>
+    public async Task<ExactAddress> FindDeliveryAddressAsync(Guid accountId, string addressLine1, string postcode, Guid? contactId = null)
+    {
+        if (string.IsNullOrWhiteSpace(addressLine1) || string.IsNullOrWhiteSpace(postcode))
+            return null;
+
+        var exactService = _serviceProvider.GetRequiredService<ExactService>();
+        var token = await exactService.GetValidToken();
+        if (token == null)
+        {
+            _logger.LogError("Token alınamadı");
+            return null;
+        }
+
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        try
+        {
+            string Esc(string v) => v.Trim().Replace("'", "''");
+            var filter = $"Account eq guid'{accountId}' and Type eq 4 and Postcode eq '{Esc(postcode)}' and AddressLine1 eq '{Esc(addressLine1)}'";
+            if (contactId.HasValue)
+                filter += $" and Contact eq guid'{contactId.Value}'";
+
+            var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Addresses?$filter={Uri.EscapeDataString(filter)}&$top=5";
+            var response = await client.GetAsync(url);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Filtreli teslimat adresi araması başarısız: {Status} - {Body}",
+                    response.StatusCode, await response.Content.ReadAsStringAsync());
+                return null;
+            }
+
+            var content = PreProcessAddressJson(await response.Content.ReadAsStringAsync());
+            using var doc = JsonDocument.Parse(content);
+            if (!doc.RootElement.TryGetProperty("d", out var d)) return null;
+            var results = d.ValueKind == JsonValueKind.Array ? d
+                : d.TryGetProperty("results", out var r) ? r : default;
+            if (results.ValueKind != JsonValueKind.Array) return null;
+
+            var jsonOptions = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                NumberHandling = JsonNumberHandling.AllowReadingFromString
+            };
+
+            foreach (var el in results.EnumerateArray())
+            {
+                try
+                {
+                    var address = JsonSerializer.Deserialize<ExactAddress>(PreProcessAddressJson(el.GetRawText()), jsonOptions);
+                    if (address != null && address.Id != Guid.Empty)
+                        return address;
+                }
+                catch (JsonException ex)
+                {
+                    _logger.LogWarning("Teslimat adresi ayrıştırılamadı: {Error}", ex.Message);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError("Filtreli teslimat adresi araması hatası: {Error}", ex.Message);
+        }
+
+        return null;
+    }
+
     public async Task<List<ExactAddress>> GetCustomerDeliveryAddresses(string customerId)
     {
         var exactService = _serviceProvider.GetRequiredService<ExactService>();

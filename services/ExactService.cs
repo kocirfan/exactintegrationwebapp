@@ -3148,6 +3148,70 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
 
     // Customer oluşturma/bulma metodu
     // companyInfo.HasCompany true ise hesap firma adına (company_name) aranır/oluşturulur
+    /// <summary>
+    /// Exact hesap koduyla (örn. 1300928) müşteri hesabının GUID'ini döner. Yalnızca Status=C kabul edilir.
+    /// Exact hesap kodlarını 18 karaktere soldan boşlukla doldurur; önce dolgulu, sonra düz kodla aranır.
+    /// Salt okunur; hesap yoksa veya müşteri değilse null döner.
+    /// </summary>
+    public async Task<Guid?> GetCustomerAccountIdByCodeAsync(string accountCode)
+    {
+        if (string.IsNullOrWhiteSpace(accountCode)) return null;
+
+        var token = await GetValidToken();
+        if (token == null)
+        {
+            _logger.LogError("❌ Token alınamadı (hesap kodu araması: {Code})", accountCode);
+            return null;
+        }
+
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var code = accountCode.Trim().Replace("'", "''");
+        foreach (var candidate in new[] { code.PadLeft(18), code })
+        {
+            try
+            {
+                var filter = Uri.EscapeDataString($"Code eq '{candidate}'");
+                var url = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter={filter}&$select=ID,Code,Name,Status";
+                var response = await client.GetAsync(url);
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning("⚠️ Hesap kodu araması başarısız ({Code}): {Status}", accountCode, response.StatusCode);
+                    continue;
+                }
+
+                using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                var d = doc.RootElement.GetProperty("d");
+                var results = d.ValueKind == JsonValueKind.Object && d.TryGetProperty("results", out var r) ? r : d;
+
+                foreach (var acc in results.EnumerateArray())
+                {
+                    var status = acc.TryGetProperty("Status", out var st) ? st.GetString() : null;
+                    var name = acc.TryGetProperty("Name", out var nm) ? nm.GetString() : null;
+                    if (status != "C")
+                    {
+                        _logger.LogError("❌ Hesap {Code} ({Name}) bulundu ama Status={Status}, müşteri (C) değil", accountCode, name, status);
+                        return null;
+                    }
+                    if (acc.TryGetProperty("ID", out var idProp) && Guid.TryParse(idProp.GetString(), out var id))
+                    {
+                        _logger.LogInformation("✅ Hesap kodu {Code} → {Name} ({Id})", accountCode, name, id);
+                        return id;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("❌ Hesap kodu araması hatası ({Code}): {Error}", accountCode, ex.Message);
+            }
+        }
+
+        _logger.LogError("❌ Exact'ta {Code} kodlu hesap bulunamadı", accountCode);
+        return null;
+    }
+
     public async Task<Guid?> CreateOrGetCustomerAsync(ShopifyCustomer customer, ShopifyCompanyInfo companyInfo = null)
     {
         bool isCompany = companyInfo?.HasCompany == true;
@@ -3329,7 +3393,7 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
 
 
     // Hesaba bağlı ilgili kişiyi (crm/Contacts) bul, yoksa oluştur
-    public async Task<Guid?> GetOrCreateContactAsync(Guid accountId, string firstName, string lastName, string email = null, string phone = null)
+    public async Task<Guid?> GetOrCreateContactAsync(Guid accountId, string firstName, string lastName, string email = null, string phone = null, bool filterByLastName = false)
     {
         var token = await GetValidToken();
         if (token == null)
@@ -3351,6 +3415,12 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
 
             // Önce hesabın mevcut kontaklarına bak
             var searchUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Contacts?$filter=Account eq guid'{accountId}'&$select=ID,FirstName,LastName,Email";
+            if (filterByLastName)
+            {
+                // Çok kontaklı hesaplarda (örn. bol.com tek cari) ilk sayfa yetmez: soyada göre sunucu tarafında daralt.
+                var contactFilter = $"Account eq guid'{accountId}' and LastName eq '{lastName.Trim().Replace("'", "''")}'";
+                searchUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Contacts?$filter={Uri.EscapeDataString(contactFilter)}&$select=ID,FirstName,LastName,Email";
+            }
             var searchResponse = await client.GetAsync(searchUrl);
             if (searchResponse.IsSuccessStatusCode)
             {

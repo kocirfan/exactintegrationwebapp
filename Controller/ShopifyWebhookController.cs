@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Reflection;
 using ShopifyProductApp.Services.PendingOperations;
 using ShopifyProductApp.Services.Notifications;
+using ShopifyProductApp.Services;
 
 
 namespace ShopifyProductApp.Controllers
@@ -26,6 +27,7 @@ namespace ShopifyProductApp.Controllers
         private readonly string _failedOrdersLogPath;
         private readonly PendingOperationService _pendingOperations; // bekleyen işlem havuzu
         private readonly TokenOutageMonitor _tokenMonitor;           // Exact token müsait mi?
+        private readonly BolOrderRouter _bolRouter;                  // bol.com siparişleri → tek cari
 
 
         public ShopifyWebhookController(
@@ -33,7 +35,8 @@ namespace ShopifyProductApp.Controllers
             ILogger<ShopifyWebhookController> logger,
             ExactAddressCrud exactAddressCrud,
             IConfiguration configuration, IMemoryCache cache, ApplicationDbContext dbContext, AddressMatchingService addressMatchingService,
-            PendingOperationService pendingOperations, TokenOutageMonitor tokenMonitor)
+            PendingOperationService pendingOperations, TokenOutageMonitor tokenMonitor,
+            BolOrderRouter bolRouter)
         {
             _exactService = exactService;
             _logger = logger;
@@ -44,6 +47,7 @@ namespace ShopifyProductApp.Controllers
             _addressMatchingService = addressMatchingService;
             _pendingOperations = pendingOperations;
             _tokenMonitor = tokenMonitor;
+            _bolRouter = bolRouter;
             
             // Failed orders log dosya yolu
             var logDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
@@ -198,7 +202,23 @@ namespace ShopifyProductApp.Controllers
                 }
 
                 // 1. Müşteriyi  bul
-                var customerId = await _exactService.CreateOrGetCustomerAsync(shopifyOrder.Customer, companyInfo);
+                // bol.com siparişleri yeni cari açmadan tek bol.com carisine yazılır (bkz. BolOrderRouter)
+                bool isBolOrder = _bolRouter.IsBolOrder(shopifyOrder);
+                Guid? customerId;
+                if (isBolOrder)
+                {
+                    _logger.LogInformation("🛒 bol.com siparişi ({OrderName}): tek bol.com carisine yazılacak", shopifyOrder.Name);
+                    customerId = await _bolRouter.GetBolAccountIdAsync();
+                    if (customerId == null)
+                    {
+                        _logger.LogError("❌ bol.com carisi Exact'ta bulunamadı veya müşteri değil; sipariş {OrderName} gönderilmedi", shopifyOrder.Name);
+                        return (false, null, null);
+                    }
+                }
+                else
+                {
+                    customerId = await _exactService.CreateOrGetCustomerAsync(shopifyOrder.Customer, companyInfo);
+                }
                 if (customerId == null)
                 {
                     _logger.LogError("Müşteri oluşturulamadı veya bulunamadı");
@@ -209,7 +229,7 @@ namespace ShopifyProductApp.Controllers
 
                 // 1.2. Kurumsal ise ilgili kişiyi ve fatura adresini garanti et
                 Guid? contactPersonId = null;
-                if (companyInfo.HasCompany)
+                if (!isBolOrder && companyInfo.HasCompany)
                 {
                     contactPersonId = await EnsureCompanyContactAndInvoiceAddress(shopifyOrder, companyInfo, customerId.Value);
                 }
@@ -538,8 +558,15 @@ namespace ShopifyProductApp.Controllers
                 //fatura adresi
                 // Siparişin 'Leveren aan' adresi: eşleşen/oluşturulan Type=4 adresin GUID'i buraya yazılır
                 Guid? deliveryAddressId = null;
-                bool addressesDiffer = IsBillingAddressDifferentFromShippingAddress(shopifyOrder);
-                if (addressesDiffer)
+                Guid? bolRecipientContactId = null;
+                bool addressesDiffer = !isBolOrder && IsBillingAddressDifferentFromShippingAddress(shopifyOrder);
+                if (isBolOrder)
+                {
+                    // Alıcı = bol.com carisi altında ilgili kişi; teslimat adresi bu kişiye bağlı, Main=false
+                    (deliveryAddressId, bolRecipientContactId) =
+                        await _bolRouter.ResolveDeliveryAsync(shopifyOrder.ShippingAddress, customerId.Value);
+                }
+                else if (addressesDiffer)
                 {
                    //billing yer 1
 
@@ -764,7 +791,7 @@ namespace ShopifyProductApp.Controllers
 
                     // Kurumsal siparişlerde firmanın ilgili kişisi
                     OrderedByContactPerson = contactPersonId,
-                    DeliverToContactPerson = contactPersonId,
+                    DeliverToContactPerson = isBolOrder ? bolRecipientContactId : contactPersonId,
                     InvoiceToContactPerson = contactPersonId,
                     OrderDate = orderDate,
                     DeliveryDate = defaultDeliveryDate,  // Pickup date veya varsayılan

@@ -24,6 +24,7 @@ public class ShopifyOrderCrud
 
     private ExactService _exactService => _serviceProvider.GetRequiredService<ExactService>();
     private ExactAddressCrud _exactAddressCrud => _serviceProvider.GetRequiredService<ExactAddressCrud>();
+    private BolOrderRouter _bolRouter => _serviceProvider.GetRequiredService<BolOrderRouter>();
     private IConfiguration _configuration => _serviceProvider.GetRequiredService<IConfiguration>();
 
 
@@ -264,7 +265,23 @@ public class ShopifyOrderCrud
             }
 
             // 1. Müşteriyi  bul
-            var customerId = await _exactService.CreateOrGetCustomerAsync(shopifyOrder.Customer, companyInfo);
+            // bol.com siparişleri yeni cari açmadan tek bol.com carisine yazılır (bkz. BolOrderRouter)
+            bool isBolOrder = _bolRouter.IsBolOrder(shopifyOrder);
+            Guid? customerId;
+            if (isBolOrder)
+            {
+                _logger.LogInformation("🛒 bol.com siparişi ({OrderName}): tek bol.com carisine yazılacak", shopifyOrder.Name);
+                customerId = await _bolRouter.GetBolAccountIdAsync();
+                if (customerId == null)
+                {
+                    _logger.LogError("❌ bol.com carisi Exact'ta bulunamadı veya müşteri değil; sipariş {OrderName} gönderilmedi", shopifyOrder.Name);
+                    return (false, null, null);
+                }
+            }
+            else
+            {
+                customerId = await _exactService.CreateOrGetCustomerAsync(shopifyOrder.Customer, companyInfo);
+            }
             if (customerId == null)
             {
                 _logger.LogError("Müşteri oluşturulamadı veya bulunamadı");
@@ -276,7 +293,7 @@ public class ShopifyOrderCrud
 
             // 1.2. Kurumsal ise ilgili kişiyi ve fatura adresini garanti et
             Guid? contactPersonId = null;
-            if (companyInfo.HasCompany)
+            if (!isBolOrder && companyInfo.HasCompany)
             {
                 contactPersonId = await EnsureCompanyContactAndInvoiceAddress(shopifyOrder, companyInfo, customerId.Value);
             }
@@ -614,8 +631,16 @@ public class ShopifyOrderCrud
             //adress kontrol
             // Siparişin 'Leveren aan' adresi: eşleşen/oluşturulan Type=4 adresin GUID'i buraya yazılır
             Guid? deliveryAddressId = null;
-            bool addressesDiffer = IsBillingAddressDifferentFromShippingAddress(shopifyOrder);
-            if (addressesDiffer)
+            Guid? bolRecipientContactId = null;
+            bool addressesDiffer = !isBolOrder && IsBillingAddressDifferentFromShippingAddress(shopifyOrder);
+            if (isBolOrder)
+            {
+                // Alıcı = bol.com carisi altında ilgili kişi; teslimat adresi bu kişiye bağlı, Main=false
+                (deliveryAddressId, bolRecipientContactId) =
+                    await _bolRouter.ResolveDeliveryAsync(shopifyOrder.ShippingAddress, customerId.Value);
+                await Task.Delay(ADDRESS_OPERATION_DELAY_MS);
+            }
+            else if (addressesDiffer)
             {
                 var delivery = shopifyOrder.ShippingAddress;
                 if (delivery != null)
@@ -823,7 +848,7 @@ public class ShopifyOrderCrud
 
                 // Kurumsal siparişlerde firmanın ilgili kişisi
                 OrderedByContactPerson = contactPersonId,
-                DeliverToContactPerson = contactPersonId,
+                DeliverToContactPerson = isBolOrder ? bolRecipientContactId : contactPersonId,
                 InvoiceToContactPerson = contactPersonId,
                 OrderDate = orderDate,
                 DeliveryDate = defaultDeliveryDate,  // Pickup date veya varsayılan
