@@ -13,6 +13,9 @@ public class ShopifyCompanyInfo
     public string City { get; set; }
     public string Phone { get; set; }
     public string Email { get; set; }
+    // BTW / KvK: company_name boş olsa da checkout'ta dolabiliyor; cari eşleştirmede kullanılır
+    public string VatNumber { get; set; }
+    public string KvkNumber { get; set; }
 
     public bool HasCompany => !string.IsNullOrWhiteSpace(Name);
 
@@ -45,6 +48,8 @@ public class ShopifyCompanyInfo
         info.City = Get("company_city");
         info.Phone = Get("company_phone");
         info.Email = Get("company_email");
+        info.VatNumber = Get("vat_number");
+        info.KvkNumber = Get("kvk_number");
         return info;
     }
 }

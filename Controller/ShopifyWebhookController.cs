@@ -28,6 +28,7 @@ namespace ShopifyProductApp.Controllers
         private readonly PendingOperationService _pendingOperations; // bekleyen işlem havuzu
         private readonly TokenOutageMonitor _tokenMonitor;           // Exact token müsait mi?
         private readonly BolOrderRouter _bolRouter;                  // bol.com siparişleri → tek cari
+        private readonly ShopifyGraphQLService _graphqlService;      // müşterinin exact_customer_id metafield'ı
 
 
         public ShopifyWebhookController(
@@ -36,7 +37,7 @@ namespace ShopifyProductApp.Controllers
             ExactAddressCrud exactAddressCrud,
             IConfiguration configuration, IMemoryCache cache, ApplicationDbContext dbContext, AddressMatchingService addressMatchingService,
             PendingOperationService pendingOperations, TokenOutageMonitor tokenMonitor,
-            BolOrderRouter bolRouter)
+            BolOrderRouter bolRouter, ShopifyGraphQLService graphqlService)
         {
             _exactService = exactService;
             _logger = logger;
@@ -48,6 +49,7 @@ namespace ShopifyProductApp.Controllers
             _pendingOperations = pendingOperations;
             _tokenMonitor = tokenMonitor;
             _bolRouter = bolRouter;
+            _graphqlService = graphqlService;
             
             // Failed orders log dosya yolu
             var logDirectory = Path.Combine(Directory.GetCurrentDirectory(), "Logs");
@@ -217,7 +219,9 @@ namespace ShopifyProductApp.Controllers
                 }
                 else
                 {
-                    customerId = await _exactService.CreateOrGetCustomerAsync(shopifyOrder.Customer, companyInfo);
+                    // Shopify müşterisinde kayıtlı Exact carisi varsa önce o kullanılır (mükerrer cari önlemi)
+                    var knownExactId = await _graphqlService.GetCustomerExactIdAsync(shopifyOrder.Customer?.Id ?? 0);
+                    customerId = await _exactService.CreateOrGetCustomerAsync(shopifyOrder.Customer, companyInfo, knownExactId);
                 }
                 if (customerId == null)
                 {

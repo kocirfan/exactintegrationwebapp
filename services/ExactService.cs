@@ -3212,7 +3212,9 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
         return null;
     }
 
-    public async Task<Guid?> CreateOrGetCustomerAsync(ShopifyCustomer customer, ShopifyCompanyInfo companyInfo = null)
+    // Arama sırası: Shopify'daki exact_customer_id → BTW → KvK → e-posta(lar) → (e-posta yoksa) firma adı.
+    // Arama isteklerinden biri hata verirse yeni cari AÇILMAZ (mükerrer cari riskine karşı) ve null döner.
+    public async Task<Guid?> CreateOrGetCustomerAsync(ShopifyCustomer customer, ShopifyCompanyInfo companyInfo = null, string knownExactAccountId = null)
     {
         bool isCompany = companyInfo?.HasCompany == true;
         var token = await GetValidToken();
@@ -3229,29 +3231,48 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
 
         try
         {
-            // Önce müşteriyi email ile ara (kurumsal ise company_email öncelikli)
-            var searchEmail = isCompany && !string.IsNullOrWhiteSpace(companyInfo.Email)
-                ? companyInfo.Email
-                : customer.Email;
-            var email = searchEmail?.Replace("'", "''");
+            static string Escape(string value) => value.Replace("'", "''");
 
-            string searchUrl;
-            if (isCompany && string.IsNullOrWhiteSpace(searchEmail))
-            {
-                // Kurumsal ama email yok: firma adı ile ara
-                var escapedCompanyName = companyInfo.Name.Replace("'", "''");
-                searchUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Name eq '{escapedCompanyName}' and Status eq 'C'&$select=ID,Name,Email,Status";
-                Console.WriteLine($"🔍 Kurumsal müşteri firma adı ile aranıyor: {companyInfo.Name}");
-            }
-            else
-            {
-                searchUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter=Email eq '{email}' and Status eq 'C'&$select=ID,Name,Email,Status";
-                Console.WriteLine($"🔍 Müşteri aranıyor: {email}{(isCompany ? " (kurumsal)" : "")}");
-            }
+            // Aday aramalar (filtre, log etiketi) — sırayla denenir, ilk eşleşen kullanılır
+            var searches = new List<(string filter, string label)>();
 
-            var searchResponse = await client.GetAsync(searchUrl);
-            if (searchResponse.IsSuccessStatusCode)
+            if (Guid.TryParse(knownExactAccountId, out var knownId))
+                searches.Add(($"ID eq guid'{knownId}'", $"exact_customer_id {knownId}"));
+
+            var vatNumber = new string((companyInfo?.VatNumber ?? "").Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
+            if (vatNumber.Length > 0)
+                searches.Add(($"VATNumber eq '{Escape(vatNumber)}'", $"BTW {vatNumber}"));
+
+            var kvkNumber = new string((companyInfo?.KvkNumber ?? "").Where(char.IsDigit).ToArray());
+            if (kvkNumber.Length > 0)
+                searches.Add(($"ChamberOfCommerce eq '{kvkNumber}'", $"KvK {kvkNumber}"));
+
+            // Kurumsal ise company_email öncelikli, ardından Shopify müşteri e-postası
+            var emails = new List<string>();
+            if (isCompany && !string.IsNullOrWhiteSpace(companyInfo.Email)) emails.Add(companyInfo.Email.Trim());
+            if (!string.IsNullOrWhiteSpace(customer?.Email)) emails.Add(customer.Email.Trim());
+            emails = emails.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            foreach (var candidateEmail in emails)
+                searches.Add(($"Email eq '{Escape(candidateEmail)}'", $"e-posta {candidateEmail}"));
+
+            // Kurumsal ama hiç e-posta yok: firma adı ile ara
+            if (isCompany && emails.Count == 0)
+                searches.Add(($"Name eq '{Escape(companyInfo.Name)}'", $"firma adı {companyInfo.Name}"));
+
+            foreach (var (filter, label) in searches)
             {
+                var searchUrl = $"{_baseUrl}/api/v1/{_divisionCode}/crm/Accounts?$filter={Uri.EscapeDataString($"{filter} and Status eq 'C'")}&$select=ID,Name,Status&$top=1";
+                Console.WriteLine($"🔍 Müşteri aranıyor ({label}){(isCompany ? " (kurumsal)" : "")}");
+
+                var searchResponse = await client.GetAsync(searchUrl);
+                if (!searchResponse.IsSuccessStatusCode)
+                {
+                    var errorContent = await searchResponse.Content.ReadAsStringAsync();
+                    _logger.LogError("❌ Exact müşteri araması başarısız ({Label}): {Status} - {Content}. Mükerrer cari açmamak için yeni müşteri oluşturulmadı.",
+                        label, searchResponse.StatusCode, errorContent);
+                    return null;
+                }
+
                 var searchContent = await searchResponse.Content.ReadAsStringAsync();
                 using var searchDoc = JsonDocument.Parse(searchContent);
 
@@ -3259,28 +3280,16 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
                 JsonElement resultsElement = dataElement.ValueKind == JsonValueKind.Object && dataElement.TryGetProperty("results", out var res)
                     ? res : dataElement;
 
-                // Eğer müşteri varsa ID'sini döndür
-                if (resultsElement.EnumerateArray().Any())
+                var existingCustomer = resultsElement.EnumerateArray().FirstOrDefault();
+                if (existingCustomer.ValueKind == JsonValueKind.Object && existingCustomer.TryGetProperty("ID", out var idProp))
                 {
-                    var existingCustomer = resultsElement.EnumerateArray().First();
-                    if (existingCustomer.TryGetProperty("ID", out var idProp))
-                    {
-                        var customerId = Guid.Parse(idProp.GetString());
-
-                        // Sadece Status "C" olan müşteriler kabul edilecek
-                        var statusValue = existingCustomer.TryGetProperty("Status", out var statusProp) ? statusProp.GetString() : null;
-                        if (statusValue != "C")
-                        {
-                            Console.WriteLine($"⏭️ Mevcut müşteri Status={statusValue}, 'C' değil - sipariş oluşturulmadı: {customerId}");
-                            _logger.LogWarning("⚠️ Müşteri Status={Status} olduğu için sipariş oluşturulmadı: {Email}", statusValue, email);
-                            return null;
-                        }
-
-                        Console.WriteLine($"✅ Mevcut müşteri bulundu (Status=C): {customerId}");
-                        return customerId;
-                    }
+                    var customerId = Guid.Parse(idProp.GetString());
+                    Console.WriteLine($"✅ Mevcut müşteri bulundu ({label}, Status=C): {customerId}");
+                    return customerId;
                 }
             }
+
+            var email = emails.FirstOrDefault();
 
             // Müşteri bulunamadı - Yeni müşteri oluştur (sadece Status "C" olarak)
             Console.WriteLine($"⚠️ Müşteri bulunamadı: {email} - Yeni müşteri (Status=C) oluşturuluyor...");

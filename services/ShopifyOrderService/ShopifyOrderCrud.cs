@@ -280,7 +280,9 @@ public class ShopifyOrderCrud
             }
             else
             {
-                customerId = await _exactService.CreateOrGetCustomerAsync(shopifyOrder.Customer, companyInfo);
+                // Shopify müşterisinde kayıtlı Exact carisi varsa önce o kullanılır (mükerrer cari önlemi)
+                var knownExactId = await _graphqlService.GetCustomerExactIdAsync(shopifyOrder.Customer?.Id ?? 0);
+                customerId = await _exactService.CreateOrGetCustomerAsync(shopifyOrder.Customer, companyInfo, knownExactId);
             }
             if (customerId == null)
             {

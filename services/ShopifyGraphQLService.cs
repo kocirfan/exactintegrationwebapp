@@ -1005,6 +1005,41 @@ public class ShopifyGraphQLService
     /// "exact_online.customer_code" veya "custom.customer_code" içinde arar
     /// </summary>
     /// 
+    // Müşterinin custom.exact_customer_id metafield'ı (Exact Account GUID); yoksa/hata olursa null
+    public async Task<string> GetCustomerExactIdAsync(long shopifyCustomerId)
+    {
+        if (shopifyCustomerId <= 0)
+            return null;
+
+        try
+        {
+            var query = $@"{{ customer(id: ""gid://shopify/Customer/{shopifyCustomerId}"") {{ metafield(namespace: ""custom"", key: ""exact_customer_id"") {{ value }} }} }}";
+            var payload = JsonSerializer.Serialize(new { query });
+            var response = await _client.PostAsync(_graphqlEndpoint, new StringContent(payload, Encoding.UTF8, "application/json"));
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"⚠️ exact_customer_id metafield okunamadı: {response.StatusCode}");
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            if (doc.RootElement.TryGetProperty("data", out var data) &&
+                data.TryGetProperty("customer", out var customer) && customer.ValueKind == JsonValueKind.Object &&
+                customer.TryGetProperty("metafield", out var metafield) && metafield.ValueKind == JsonValueKind.Object &&
+                metafield.TryGetProperty("value", out var value))
+            {
+                var exactId = value.GetString()?.Trim();
+                return string.IsNullOrEmpty(exactId) ? null : exactId;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ exact_customer_id metafield okuma hatası: {ex.Message}");
+        }
+
+        return null;
+    }
+
     public async Task<ShopifyCustomer> SearchCustomerByMetafieldCodeAsync(string customerCode)
     {
         if (string.IsNullOrWhiteSpace(customerCode))
