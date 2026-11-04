@@ -2640,6 +2640,69 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
         return results;
     }
 
+    /// <summary>
+    /// Verilen andan sonra fiyat satırı değişmiş ürünlerin Exact Item ID'lerini döner (SALT OKUNUR).
+    /// Müşteriye özel fiyatlar (Account dolu) hariç tutulur. Sadece tetikleyici olarak kullanılır;
+    /// Shopify'a yazılacak fiyat Items.StandardSalesPrice'tan okunur. __next ile sayfalanır.
+    /// Hata olursa null döner (boş liste ile karıştırılmasın diye).
+    /// </summary>
+    public async Task<HashSet<Guid>?> GetItemIdsWithChangedSalesPricesSinceAsync(DateTime since)
+    {
+        var token = await GetValidToken();
+        if (token == null) return null;
+
+        using var client = new HttpClient();
+        client.Timeout = TimeSpan.FromMinutes(2);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var sinceStr = since.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss");
+        var filter = $"Modified gt datetime'{sinceStr}' and Account eq null";
+        string? url = $"{_baseUrl}/api/v1/{_divisionCode}/logistics/SalesItemPrices?$filter={Uri.EscapeDataString(filter)}&$select=Item";
+
+        var ids = new HashSet<Guid>();
+        int pages = 0;
+
+        while (!string.IsNullOrEmpty(url) && pages < 100)
+        {
+            pages++;
+            var resp = await client.GetAsync(url);
+
+            if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            {
+                _logger.LogWarning("⏳ SalesItemPrices rate limit, 30sn bekleniyor...");
+                await Task.Delay(30000);
+                pages--;
+                continue;
+            }
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                _logger.LogError("❌ SalesItemPrices (değişenler) alınamadı: {Status}", resp.StatusCode);
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            if (!doc.RootElement.TryGetProperty("d", out var d)) break;
+
+            if (d.TryGetProperty("results", out var arr))
+            {
+                foreach (var row in arr.EnumerateArray())
+                {
+                    if (row.TryGetProperty("Item", out var idEl) && idEl.ValueKind == JsonValueKind.String &&
+                        Guid.TryParse(idEl.GetString(), out var g))
+                        ids.Add(g);
+                }
+            }
+
+            url = d.TryGetProperty("__next", out var nextEl) && nextEl.ValueKind == JsonValueKind.String
+                ? nextEl.GetString()
+                : null;
+        }
+
+        return ids;
+    }
+
 
    public async Task<string> GetSalesItemPricesRawAsync(string itemCode)
     {

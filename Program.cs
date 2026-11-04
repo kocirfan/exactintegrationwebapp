@@ -414,6 +414,9 @@ builder.Services.AddScoped<ShopifyProductApp.Services.ExactPriceList.CustomerPri
 // Her gece 03:00'te TÜM ürünlerin fiyatını Exact'tan Shopify'a senkronlar (PriceSyncLogs'a yazar)
 builder.Services.AddHostedService<NightlyPriceSyncBackgroundService>();
 
+// 08:00-22:00 arası her saat başı SADECE değişen ürünlerin satış fiyatını (StandardSalesPrice) Shopify'a yazar
+builder.Services.AddHostedService<HourlyPriceSyncBackgroundService>();
+
 // Her gece 04:30'da son 24 saatte değişen müşterileri senkronlar (CustomerSyncLogs'a yazar)
 builder.Services.AddHostedService<NightlyCustomerSyncBackgroundService>();
 builder.Services.AddSingleton<ITokenBlacklistService, TokenBlacklistService>();
