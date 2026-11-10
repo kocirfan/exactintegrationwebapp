@@ -431,6 +431,12 @@ builder.Services.AddSingleton<ShopifyProductApp.Services.Notifications.TokenOuta
 builder.Services.AddScoped<ShopifyProductApp.Services.PendingOperations.PendingOperationService>();
 builder.Services.AddHostedService<ShopifyProductApp.Services.PendingOperations.PendingOperationProcessorService>();
 
+// 📦 Exact'ta tamamlanan (Status=21) siparişleri Shopify'da fulfilled yapar (notifyCustomer=false).
+// Sadece servisin ilk açılışından SONRA aktarılan siparişler; pickup ve bol.com atlanır, raporlanır.
+// Ayarlar: App:BackgroundServices:OrderFulfillmentSync (Enabled, DryRun, IntervalMinutes, MaxAgeDays)
+// Durum: GET /api/order-fulfillment-sync
+builder.Services.AddHostedService<ShopifyProductApp.Services.OrderFulfillmentSync.OrderFulfillmentSyncService>();
+
 var app = builder.Build();
 
 // App configuration'dan ayarları oku
@@ -464,6 +470,16 @@ using (var scope = app.Services.CreateScope())
         catch (Exception ex)
         {
             Console.WriteLine($"⚠️ PendingOperations tablosu oluşturulamadı: {ex.Message}");
+        }
+
+        try
+        {
+            await ShopifyProductApp.Data.OrderFulfillmentSyncSchema.EnsureTableAsync(dbContext);
+            Console.WriteLine("✅ OrderFulfillmentSyncs tablosu hazır");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ OrderFulfillmentSyncs tablosu oluşturulamadı: {ex.Message}");
         }
 
         // İlk token durumu kontrolü
