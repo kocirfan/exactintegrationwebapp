@@ -42,3 +42,6 @@ Migrations/
 *.snupkg
 inactiveproduct.json
 .gitnexus
+
+# Markdown dosyaları (dokümantasyon / AI notları)
+*.md

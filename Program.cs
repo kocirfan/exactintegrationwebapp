@@ -437,6 +437,13 @@ builder.Services.AddHostedService<ShopifyProductApp.Services.PendingOperations.P
 // Durum: GET /api/order-fulfillment-sync
 builder.Services.AddHostedService<ShopifyProductApp.Services.OrderFulfillmentSync.OrderFulfillmentSyncService>();
 
+// 🏷️ Mega Deal (Black Friday vb.): kampanya süresince Shopify fiyatı normal fiyattan düşükse
+// compareAtPrice = normal fiyat yazar, kampanya bitince kendi yazdığını temizler. Exact'a yazmaz.
+// Ayarlar: App:BackgroundServices:MegaDealCompareAt (Enabled=false, DryRun=true, IntervalMinutes=15)
+// Uçlar: /api/mega-deals (import, run?dryRun=true, {campaign}/end)
+builder.Services.AddSingleton<ShopifyProductApp.Services.MegaDeals.MegaDealCompareAtService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ShopifyProductApp.Services.MegaDeals.MegaDealCompareAtService>());
+
 var app = builder.Build();
 
 // App configuration'dan ayarları oku
@@ -480,6 +487,16 @@ using (var scope = app.Services.CreateScope())
         catch (Exception ex)
         {
             Console.WriteLine($"⚠️ OrderFulfillmentSyncs tablosu oluşturulamadı: {ex.Message}");
+        }
+
+        try
+        {
+            await ShopifyProductApp.Data.MegaDealSchema.EnsureTableAsync(dbContext);
+            Console.WriteLine("✅ MegaDeals tablosu hazır");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️ MegaDeals tablosu oluşturulamadı: {ex.Message}");
         }
 
         // İlk token durumu kontrolü

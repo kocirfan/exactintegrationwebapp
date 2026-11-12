@@ -17,7 +17,7 @@ namespace ShopifyProductApp.Services
     /// - Yazılan fiyat: yalnızca Items.StandardSalesPrice (gece senkronu ile aynı fiyat). Müşteri/katalog
     ///   fiyatlarına dokunulmaz.
     /// - Referans: Shopify'daki mevcut variant fiyatı. Aynıysa API çağrısı yapılmaz (Unchanged);
-    ///   0/negatif fiyat yazılmaz. Sonuçlar PriceSyncLogs tablosuna yazılır.
+    ///   Boş/negatif fiyat yazılmaz (0 fiyat yazılır). Sonuçlar PriceSyncLogs tablosuna yazılır.
     ///
     /// Ayarlar (appsettings, opsiyonel):
     ///   App:BackgroundServices:HourlyPriceSyncStart  (varsayılan 08:00)

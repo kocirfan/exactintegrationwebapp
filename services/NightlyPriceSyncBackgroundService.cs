@@ -6,7 +6,7 @@ namespace ShopifyProductApp.Services
     /// Her gece 03:00'te TÜM webshop ürünlerinin fiyatlarını Exact'tan Shopify'a senkronlar.
     /// Motor olarak ManualPriceSyncRunner kullanılır: ürünler Exact'tan batch batch çekilir,
     /// fiyatı değişenler Shopify'da güncellenir, her ürün PriceSyncLogs tablosuna yazılır
-    /// (0/negatif fiyat koruması ve değişmeyen fiyatları atlama optimizasyonu dahil).
+    /// (boş/negatif fiyat koruması — 0 fiyat yazılır — ve değişmeyen fiyatları atlama optimizasyonu dahil).
     /// Saat, appsettings "App:BackgroundServices:PriceSyncTime" ile değiştirilebilir.
     /// </summary>
     public class NightlyPriceSyncBackgroundService : BackgroundService

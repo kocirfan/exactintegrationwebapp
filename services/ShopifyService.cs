@@ -20,7 +20,7 @@ public class PriceBatchUpdateResult
     public int SuccessCount { get; set; }
     public int ErrorCount { get; set; }
     public int UnchangedCount { get; set; }         // Fiyat zaten aynı - API çağrısı yapılmadı
-    public int SkippedZeroPriceCount { get; set; }  // Exact fiyatı 0/negatif - atlandı
+    public int SkippedZeroPriceCount { get; set; }  // Exact fiyatı boş/okunamadı veya negatif - atlandı (0 artık yazılır)
     public List<PriceSyncLog> LogEntries { get; set; } = new();
 }
 
@@ -2997,9 +2997,35 @@ public class ShopifyService
         }
     }
 
+    // ConvertToDecimalSafe'ten farkı: boş/okunamayan değer için 0 yerine false döner,
+    // böylece gerçek 0 fiyat ile eksik fiyat ayırt edilir.
+    public static bool TryConvertToDecimal(object value, out decimal result)
+    {
+        result = 0;
+        switch (value)
+        {
+            case null: return false;
+            case JsonElement je:
+                if (je.ValueKind == JsonValueKind.Number) return je.TryGetDecimal(out result);
+                if (je.ValueKind != JsonValueKind.String) return false;
+                return TryConvertToDecimal(je.GetString(), out result);
+            case decimal m: result = m; return true;
+            case double d: result = (decimal)d; return true;
+            case float f: result = (decimal)f; return true;
+            case int i: result = i; return true;
+            case long l: result = l; return true;
+            default:
+                var s = value.ToString()?.Trim();
+                if (string.IsNullOrEmpty(s)) return false;
+                if (decimal.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result)) return true;
+                return decimal.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.CurrentCulture, out result);
+        }
+    }
+
     // Exact ürünlerinin fiyatlarını Shopify variantlarına yazar.
     // Eşleştirme önceliği: exact_product_id metafield → SKU (kod) → barcode.
-    // Güvenlik: Exact fiyatı <= 0 olan ürünler atlanır (Shopify fiyatı sıfırlanmaz).
+    // Exact fiyatı 0 ise Shopify'a da 0 yazılır (ör. kampanyada bedava verilen ürünler).
+    // Güvenlik: fiyat alanı boş/okunamıyorsa veya negatifse atlanır (boş alan yanlışlıkla 0'a çekilmesin).
     // Optimizasyon: fiyat zaten aynıysa API çağrısı yapılmaz, sadece loglanır.
     public async Task<PriceBatchUpdateResult> UpdateMultiplePricesBatchAsync(
         List<Dictionary<string, object>> exactItems,
@@ -3015,7 +3041,8 @@ public class ShopifyService
             var code = item.GetValueOrDefault("Code")?.ToString()?.Trim();
             var exactItemId = item.GetValueOrDefault("ID")?.ToString();
             var exactName = item.GetValueOrDefault("Description")?.ToString();
-            var newPrice = ConvertToDecimalSafe(item.GetValueOrDefault("StandardSalesPrice"));
+            var rawPrice = item.GetValueOrDefault("StandardSalesPrice");
+            var priceReadable = TryConvertToDecimal(rawPrice, out var newPrice);
 
             var (variants, matchedBy) = MatchExactItem(item, byExactId, bySku, byBarcode);
 
@@ -3048,11 +3075,13 @@ public class ShopifyService
                     UpdatedAt = DateTime.Now
                 };
 
-                // Güvenlik: Exact fiyatı 0/negatifse dokunma
-                if (newPrice <= 0)
+                // Güvenlik: fiyat boş/okunamıyorsa veya negatifse dokunma. 0 ise yazılır.
+                if (!priceReadable || newPrice < 0)
                 {
                     logEntry.Success = false;
-                    logEntry.ErrorMessage = "Exact fiyatı 0 veya negatif - Shopify fiyatı korundu";
+                    logEntry.ErrorMessage = !priceReadable
+                        ? "Exact fiyatı boş veya okunamadı - Shopify fiyatı korundu"
+                        : "Exact fiyatı negatif - Shopify fiyatı korundu";
                     result.SkippedZeroPriceCount++;
                     result.LogEntries.Add(logEntry);
                     continue;
