@@ -26,7 +26,7 @@ namespace ShopifyProductApp.Services.Notifications
 
     /// <summary>
     /// Exact token kesintisini izler (singleton):
-    ///  - token art arda ThresholdMinutes (varsayılan 30 dk) boyunca alınamazsa e-posta uyarısı gönderir
+    ///  - token art arda ThresholdMinutes (varsayılan 10 dk) boyunca alınamazsa e-posta uyarısı gönderir
     ///    (kesinti başına 1 kez; gönderim başarısızsa bir sonraki turda tekrar dener),
     ///  - token geri gelince toparlanma e-postası gönderir ve bekleyen işlem havuzunu hemen tetikler.
     ///
@@ -75,7 +75,7 @@ namespace ShopifyProductApp.Services.Notifications
 
             var section = configuration.GetSection("Notifications:TokenAlert");
             _alertEnabled = !bool.TryParse(section["Enabled"], out var enabled) || enabled;
-            _thresholdMinutes = int.TryParse(section["ThresholdMinutes"], out var t) && t > 0 ? t : 30;
+            _thresholdMinutes = int.TryParse(section["ThresholdMinutes"], out var t) && t > 0 ? t : 10;
             _panelUrl = section["PanelUrl"];
 
             _logger.LogInformation("🔧 Token kesinti izleyici: uyarı {State}, eşik {Threshold} dk, alıcı {To}",

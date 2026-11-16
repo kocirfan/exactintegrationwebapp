@@ -20,7 +20,7 @@ public class PriceBatchUpdateResult
     public int SuccessCount { get; set; }
     public int ErrorCount { get; set; }
     public int UnchangedCount { get; set; }         // Fiyat zaten aynı - API çağrısı yapılmadı
-    public int SkippedZeroPriceCount { get; set; }  // Exact fiyatı boş/okunamadı veya negatif - atlandı (0 artık yazılır)
+    public int SkippedZeroPriceCount { get; set; }  // Exact fiyatı 0, negatif veya boş/okunamadı - atlandı
     public List<PriceSyncLog> LogEntries { get; set; } = new();
 }
 
@@ -3024,8 +3024,8 @@ public class ShopifyService
 
     // Exact ürünlerinin fiyatlarını Shopify variantlarına yazar.
     // Eşleştirme önceliği: exact_product_id metafield → SKU (kod) → barcode.
-    // Exact fiyatı 0 ise Shopify'a da 0 yazılır (ör. kampanyada bedava verilen ürünler).
-    // Güvenlik: fiyat alanı boş/okunamıyorsa veya negatifse atlanır (boş alan yanlışlıkla 0'a çekilmesin).
+    // Güvenlik: Exact fiyatı 0/negatif veya boş/okunamıyorsa atlanır (Shopify fiyatı sıfırlanmaz).
+    // Bedava ürünler Shopify'da upsell uygulamasıyla yönetilir, 0 fiyat yazılmaz.
     // Optimizasyon: fiyat zaten aynıysa API çağrısı yapılmaz, sadece loglanır.
     public async Task<PriceBatchUpdateResult> UpdateMultiplePricesBatchAsync(
         List<Dictionary<string, object>> exactItems,
@@ -3075,13 +3075,13 @@ public class ShopifyService
                     UpdatedAt = DateTime.Now
                 };
 
-                // Güvenlik: fiyat boş/okunamıyorsa veya negatifse dokunma. 0 ise yazılır.
-                if (!priceReadable || newPrice < 0)
+                // Güvenlik: fiyat boş/okunamıyorsa veya 0/negatifse dokunma
+                if (!priceReadable || newPrice <= 0)
                 {
                     logEntry.Success = false;
                     logEntry.ErrorMessage = !priceReadable
                         ? "Exact fiyatı boş veya okunamadı - Shopify fiyatı korundu"
-                        : "Exact fiyatı negatif - Shopify fiyatı korundu";
+                        : "Exact fiyatı 0 veya negatif - Shopify fiyatı korundu";
                     result.SkippedZeroPriceCount++;
                     result.LogEntries.Add(logEntry);
                     continue;
