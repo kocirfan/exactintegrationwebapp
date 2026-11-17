@@ -2092,9 +2092,168 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
         }
     }
 
+    // Son GetAllStockedItemsAsync taramasında bundle kontrolü yapılamadığı için ATLANAN ürünler.
+    // Stok senkronu çağıranlar bunları StockSyncLogs'a "atlandı" olarak yazar; sonraki senkronda tekrar denenir.
+    public List<ShopifyProductApp.Models.StockSyncLog> LastStockScanSkippedItems { get; private set; } = new();
+
+    /// <summary>
+    /// isBundle ekstra alanı DOLU olan tüm ürünlerin ID'lerini tek istekle getirir
+    /// (ItemExtraField itemId filtresi olmadan tüm ürünleri döndürür; boş alanlar yanıtta yer almaz).
+    /// Sadece isBundle'a bakılır: isNoDiscount yalnızca indirim kuralını etkiler, stok senkronunu değil.
+    /// Toplu çekme tamamlanamazsa null döner (çağıran ürün bazlı kontrole düşer).
+    /// </summary>
+    public async Task<HashSet<string>?> GetBundleItemIdsAsync()
+    {
+        var token = await GetValidToken();
+        if (token == null) return null;
+
+        using var client = new HttpClient();
+        client.Timeout = TimeSpan.FromMinutes(5);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        var bundleIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? url = $"{_baseUrl}/api/v1/{_divisionCode}/read/logistics/ItemExtraField";
+        int attempt = 0;
+        const int maxAttempts = 6;
+
+        while (url != null)
+        {
+            try
+            {
+                var resp = await client.GetAsync(url);
+
+                if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests && attempt < maxAttempts)
+                {
+                    attempt++;
+                    Console.WriteLine($"⏳ ItemExtraField toplu: rate limit, {attempt}. deneme için 30 sn bekleniyor...");
+                    await Task.Delay(30000);
+                    continue;
+                }
+
+                if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized && attempt < maxAttempts)
+                {
+                    attempt++;
+                    token = await GetValidToken();
+                    if (token == null) return null;
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.access_token);
+                    continue;
+                }
+
+                if (!resp.IsSuccessStatusCode)
+                {
+                    _logger.LogError("❌ ItemExtraField toplu çekme hatası: {Status}", resp.StatusCode);
+                    return null;
+                }
+
+                attempt = 0;
+                using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+                if (!doc.RootElement.TryGetProperty("d", out var data)) return null;
+
+                JsonElement results;
+                url = null;
+                if (data.ValueKind == JsonValueKind.Object && data.TryGetProperty("results", out var res))
+                {
+                    results = res;
+                    // Exact büyük sonuçlarda sayfalama yapabilir: __next varsa devam et
+                    if (data.TryGetProperty("__next", out var next) && next.ValueKind == JsonValueKind.String)
+                        url = next.GetString();
+                }
+                else if (data.ValueKind == JsonValueKind.Array)
+                    results = data;
+                else
+                    return null;
+
+                foreach (var row in results.EnumerateArray())
+                {
+                    var description = row.TryGetProperty("Description", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() : null;
+                    var value = row.TryGetProperty("Value", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    var itemId = row.TryGetProperty("ItemID", out var i) && i.ValueKind == JsonValueKind.String ? i.GetString() : null;
+
+                    if (string.Equals(description, "isBundle", StringComparison.OrdinalIgnoreCase) &&
+                        !string.IsNullOrWhiteSpace(value) && !string.IsNullOrWhiteSpace(itemId))
+                        bundleIds.Add(itemId.Trim());
+                }
+            }
+            catch (Exception ex) when (ex is HttpRequestException || ex is TaskCanceledException)
+            {
+                if (attempt >= maxAttempts)
+                {
+                    _logger.LogError("❌ ItemExtraField toplu çekme ağ hatası: {Error}", ex.Message);
+                    return null;
+                }
+                attempt++;
+                await Task.Delay(5000);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("❌ ItemExtraField toplu çekme beklenmeyen hata: {Error}", ex.Message);
+                return null;
+            }
+        }
+
+        Console.WriteLine($"🧩 isBundle dolu ürün sayısı (toplu): {bundleIds.Count}");
+        return bundleIds;
+    }
+
+    /// <summary>
+    /// Tek ürün için isBundle kontrolü (toplu çekme başarısız olduğunda yedek yol).
+    /// true = bundle, false = bundle değil, null = kontrol yapılamadı (hata/rate limit).
+    /// GetItemExtraFieldAsync'ten farkı: hata "bundle değil" sayılmaz ve isNoDiscount dikkate alınmaz.
+    /// </summary>
+    private async Task<bool?> TryGetIsBundleAsync(HttpClient client, string itemId)
+    {
+        var url = $"{_baseUrl}/api/v1/{_divisionCode}/read/logistics/ItemExtraField?itemId=guid'{itemId}'";
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                var resp = await client.GetAsync(url);
+                if (resp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    await Task.Delay(30000);
+                    continue;
+                }
+                if (!resp.IsSuccessStatusCode) return null;
+
+                using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+                if (!doc.RootElement.TryGetProperty("d", out var data)) return null;
+                var results = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("results", out var res) ? res
+                            : data.ValueKind == JsonValueKind.Array ? data : default;
+                if (results.ValueKind != JsonValueKind.Array) return null;
+
+                foreach (var row in results.EnumerateArray())
+                {
+                    var description = row.TryGetProperty("Description", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() : null;
+                    var value = row.TryGetProperty("Value", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+                    if (string.Equals(description, "isBundle", StringComparison.OrdinalIgnoreCase))
+                        return !string.IsNullOrWhiteSpace(value);
+                }
+                return false; // isBundle satırı yok = alan boş = bundle değil
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("⚠️ isBundle kontrolü hatası ({ItemId}): {Error}", itemId, ex.Message);
+                await Task.Delay(5000);
+            }
+        }
+        return null;
+    }
+
     // maxItems verilirse tarama o kadar ürün bulunur bulunmaz erken durdurulur (test/kısmi senkron için)
     public async Task<List<Dictionary<string, object>>?> GetAllStockedItemsAsync(int? maxItems = null)
     {
+        LastStockScanSkippedItems = new List<ShopifyProductApp.Models.StockSyncLog>();
+
+        // Bundle listesi senkron başında TEK istekle alınır (ürün başına istek = rate limit = bundle'lar
+        // yanlışlıkla senkronlanıyordu). Alınamazsa ürün bazlı kontrole düşülür.
+        var bundleIds = await GetBundleItemIdsAsync();
+        if (bundleIds == null)
+            Console.WriteLine("⚠️ Bundle listesi toplu alınamadı, ürün bazlı kontrol kullanılacak (yavaş)");
+
+        // Ürün bazlı kontrolde sonucu belirsiz kalan ürünler: tarama sonunda tekrar denenir
+        var unverifiedItems = new List<Dictionary<string, object>>();
+
         var token = await GetValidToken();
         if (token == null) return null;
 
@@ -2223,19 +2382,30 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
                     if (hasStock)
                     {
                         string itemId = dict.GetValueOrDefault("ID", "").ToString();
-                        bool isBundle = await GetItemExtraFieldAsync(itemId);
-                        if (isBundle)
+
+                        // Ürün bazlı kontrolde Exact limiti (dakikada ~60 istek) aşılmasın
+                        if (bundleIds == null) await Task.Delay(1100);
+
+                        bool? isBundle = bundleIds != null
+                            ? bundleIds.Contains(itemId)
+                            : await TryGetIsBundleAsync(client, itemId);
+
+                        if (isBundle == true)
                         {
                             bundleItemsCount++;
                             Console.WriteLine($"   🚫 Bundle ürünü atlandı: {dict.GetValueOrDefault("Code", "N/A")} (ID: {itemId})");
                             continue; // Bundle ürünü listeye ekleme
-
+                        }
+                        else if (isBundle == null)
+                        {
+                            // Kontrol yapılamadı: bundle olabilir, stoğu ezmemek için şimdilik ekleme
+                            unverifiedItems.Add(dict);
+                            continue;
                         }
                         else
                         {
                             nonBundleItemsCount++;
                             allStockedItems.Add(dict);
-
                         }
                     }
                     stockedInPage++;
@@ -2291,7 +2461,53 @@ public async Task<List<Dictionary<string, object>>?> GetUsersAsync()
             }
         }
 
+        // Bundle kontrolü yapılamayan ürünler için tekrar turu; yine belirsiz kalanlar atlanır ve loglanır
+        if (unverifiedItems.Count > 0)
+        {
+            Console.WriteLine($"🔁 Bundle kontrolü yapılamayan {unverifiedItems.Count} ürün tekrar deneniyor...");
+            await Task.Delay(60000); // dakikalık limitin sıfırlanmasını bekle
+
+            var retryToken = await GetValidToken();
+            if (retryToken != null)
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", retryToken.access_token);
+
+            foreach (var dict in unverifiedItems)
+            {
+                string itemId = dict.GetValueOrDefault("ID", "").ToString();
+                bool? isBundle = retryToken != null ? await TryGetIsBundleAsync(client, itemId) : null;
+
+                if (isBundle == true)
+                {
+                    bundleItemsCount++;
+                }
+                else if (isBundle == false)
+                {
+                    nonBundleItemsCount++;
+                    allStockedItems.Add(dict);
+                }
+                else
+                {
+                    var code = dict.GetValueOrDefault("Code")?.ToString();
+                    LastStockScanSkippedItems.Add(new ShopifyProductApp.Models.StockSyncLog
+                    {
+                        ExactItemId = itemId,
+                        ProductCode = string.IsNullOrWhiteSpace(code) ? itemId : code,
+                        ProductName = dict.GetValueOrDefault("Description")?.ToString(),
+                        NewStock = dict.TryGetValue("Stock", out var s) && double.TryParse(s?.ToString(), out var sv) ? Convert.ToInt32(sv) : 0,
+                        UpdatedAt = DateTime.Now,
+                        Success = false,
+                        ErrorMessage = "Bundle kontrolü yapılamadı (Exact API hatası), stok güncellenmeden atlandı; sonraki senkronda tekrar denenecek"
+                    });
+                    Console.WriteLine($"   ⏭️ Bundle kontrolü yapılamadı, atlandı: {code} (ID: {itemId})");
+                }
+
+                await Task.Delay(1100);
+            }
+        }
+
         Console.WriteLine($"✅ Toplam {allStockedItems.Count} stoklu ve bundle olmayan ürün başarıyla alındı");
+        if (LastStockScanSkippedItems.Count > 0)
+            Console.WriteLine($"⏭️ Bundle kontrolü yapılamadığı için atlanan ürün: {LastStockScanSkippedItems.Count}");
 
         // 📊 DETAYLI İSTATİSTİK RAPORU
         Console.WriteLine("\n" + new string('=', 60));

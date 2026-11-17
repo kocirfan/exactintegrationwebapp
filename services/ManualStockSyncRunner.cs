@@ -103,6 +103,11 @@ namespace ShopifyProductApp.Services
 
                 // maxItems verildiyse tarama limite ulaşınca erken durur (tüm katalog beklenmez)
                 var exactItems = await exactService.GetAllStockedItemsAsync(maxItems);
+
+                // Bundle kontrolü yapılamadığı için atlanan ürünler panelde "atlandı" olarak görünsün
+                if (exactService.LastStockScanSkippedItems.Count > 0)
+                    await _stockSyncLogService.SaveAsync(exactService.LastStockScanSkippedItems);
+
                 if (exactItems == null || exactItems.Count == 0)
                 {
                     Fail("Exact'ta webshop ürünü bulunamadı");

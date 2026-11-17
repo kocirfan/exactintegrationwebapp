@@ -118,6 +118,10 @@ namespace ShopifyProductApp.Services
                 // Her ürünün güncelleme kaydını DB'ye yaz (best-effort: DB hatası senkronu durdurmaz)
                 await _stockSyncLogService.SaveAsync(batchResult.LogEntries);
 
+                // Bundle kontrolü yapılamadığı için atlanan ürünler de panelde görünsün
+                if (exactService.LastStockScanSkippedItems.Count > 0)
+                    await _stockSyncLogService.SaveAsync(exactService.LastStockScanSkippedItems);
+
                 // NOT: Eski fiyat+başlık güncellemesi kaldırıldı - fiyatlar artık
                 // NightlyPriceSyncBackgroundService ile her gece ayrıca senkronlanıyor
 
