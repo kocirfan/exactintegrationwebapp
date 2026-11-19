@@ -304,6 +304,17 @@ namespace ShopifyProductApp.Controllers
                     _logger.LogInformation("📋 Discount Applications BOŞ veya NULL");
                 }
 
+                // 🧾 Shopify'da KDV'siz (tax_exempt) geçen AB/AB dışı B2B siparişleri Exact'a da KDV'siz gitsin
+                // (ürünün %21 kodu yerine reverse charge / ihracat kodu). Bkz. OrderVatRules.
+                var vatOverride = OrderVatRules.Resolve(shopifyOrder, isBolOrder,
+                    _configuration["ExactOnline:ReverseChargeEuVatCode"], _configuration["ExactOnline:ExportVatCode"]);
+                if (vatOverride != null)
+                    _logger.LogInformation("🧾 KDV kodu override: {VatCode} (%{Pct}) - {Reason} - Sipariş {OrderName}",
+                        vatOverride.VatCode, vatOverride.VatPercentage * 100, vatOverride.Reason, shopifyOrder.Name);
+                else if (shopifyOrder.TaxExempt == true && !isBolOrder)
+                    _logger.LogWarning("⚠️ Sipariş {OrderName} Shopify'da tax_exempt ama ülke NL/boş ({Country}); ürün KDV kodu kullanılıyor",
+                        shopifyOrder.Name, OrderVatRules.ResolveCountry(shopifyOrder) ?? "-");
+
                 foreach (var lineItem in shopifyOrder.LineItems)
                 {
                     var exactItem = await _exactService.GetOrCreateItemAsync(lineItem.Sku);
@@ -385,8 +396,8 @@ namespace ShopifyProductApp.Controllers
                             UnitPrice = unitPrice,                      // 299.00 (Orijinal)
                             NetPrice = unitPriceWithDiscount,           // İndirimli (pickup hariç)
                             Discount = discountPercentage,              // YÜZDE (pickup hariç)
-                            VATPercentage = finalVATPercentage,
-                            VATCode = exactItem.SalesVatCode?.Trim(),
+                            VATPercentage = vatOverride?.VatPercentage ?? finalVATPercentage,
+                            VATCode = vatOverride?.VatCode ?? exactItem.SalesVatCode?.Trim(),
                             UnitCode = exactItem.Unit?.Trim() ?? "pc",
                             DeliveryDate = defaultDeliveryDate,
                             Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var div) ? div : 0
@@ -488,8 +499,8 @@ namespace ShopifyProductApp.Controllers
                                 UnitPrice = shippingPrice,
                                 NetPrice = shippingPrice,
                                 Discount = 0,
-                                VATPercentage = finalShippingVATPercentage,
-                                VATCode = shippingItem.SalesVatCode?.Trim(),
+                                VATPercentage = vatOverride?.VatPercentage ?? finalShippingVATPercentage,
+                                VATCode = vatOverride?.VatCode ?? shippingItem.SalesVatCode?.Trim(),
                                 UnitCode = shippingItem.Unit?.Trim() ?? "pc",
                                 DeliveryDate = defaultDeliveryDate,
                                 Division = int.TryParse(_configuration["ExactOnline:DivisionCode"], out var divShipping) ? divShipping : 0

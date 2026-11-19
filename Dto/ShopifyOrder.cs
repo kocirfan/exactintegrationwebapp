@@ -63,6 +63,10 @@ public class ShopifyOrder
     [JsonPropertyName("total_tax")]
     public string TotalTax { get; set; }
 
+    /// <summary>Sipariş anında Shopify'ın KDV muafiyeti (müşterinin tax_exempt değerinin o anki kopyası).</summary>
+    [JsonPropertyName("tax_exempt")]
+    public bool? TaxExempt { get; set; }
+
     [JsonPropertyName("line_items")]
     public List<ShopifyLineItem> LineItems { get; set; }
 
