@@ -1,0 +1,361 @@
+EXACT ↔ SHOPIFY ENTEGRASYONU — SON 20 GÜN RAPORU
+Dönem: 30 Ekim 2026 – 20 Kasım 2026
+Hazırlanma: 20 Kasım 2026
+
+======================================================================
+1) TARİH SIRASIYLA YAPILANLAR
+======================================================================
+
+04 Kasım  [YENİ]  Saatlik fiyat senkronu                          a9e4263
+          Exact fiyatları artık gece senkronuna ek olarak saatte bir
+          Shopify'a yazılıyor (HourlyPriceSyncBackgroundService).
+
+10 Kasım  [ANALİZ] Merges (Andreas) stok dalgalanması bildirdi
+          Kök neden: Exact'ta teslim edilen siparişler Shopify'da
+          "unfulfilled" kalıyor, stok "committed"ta takılı kalıyordu.
+
+10 Kasım  [YENİ]  Exact Complete → Shopify fulfilled servisi       5699987
+          Exact'ta Complete (21) olan siparişler saatte bir Shopify'da
+          fulfilled yapılıyor. Müşteriye e-posta gitmiyor.
+          PICK_UP, bol.com ve iptal siparişler atlanıyor.
+          Rapor: GET /api/order-fulfillment-sync
+
+12 Kasım  [YENİ]  Black Friday / Mega Deal compare-at servisi       89cdf6a
+          Kampanya ürünlerinde listedeki normal fiyat (Regulier) üstü
+          çizili fiyat olarak yazılıyor; kampanya bitince servis yalnızca
+          kendi yazdıklarını temizliyor. /api/mega-deals
+          BlackFriday2026: 282 SKU, 38 aile kodu varyantlara açıldı,
+          pencere 12 Kasım 00:00 – 1 Aralık 00:00 (Amsterdam).
+
+12 Kasım  [DEĞİŞİKLİK] Fiyat senkronu 0 fiyatı da yazmaya başladı  89cdf6a
+          (16 Kasım'da geri alındı, aşağıya bkz.)
+
+13 Kasım  [OLAY]  Exact token kesintisi (~07:10 UTC)
+          Token yenilenemedi. 16 sipariş (#1968–#1983) havuza düştü,
+          hiçbiri kaybolmadı. Uyarı e-postası GİTMEDİ: sunucudaki
+          appsettings'te Notifications bölümü eksik.
+
+16 Kasım  [OLAY]  Müşteri token kesintisi için şikayet etti
+          Bazı siparişler Exact'a elle girilmiş olabilir. Token yeniden
+          bağlanmadan önce bunlar /api/pending-operations/{id}/cancel ile
+          iptal edilmeli, yoksa çift sipariş oluşur.
+
+16 Kasım  [DÜZELTME] Black Friday revizyonu                         781827d
+          0 fiyat yazımı geri alındı: Exact fiyatı 0/negatif/boşsa Shopify
+          fiyatı korunuyor (bedava ürünler upsell uygulamasıyla yönetiliyor).
+          Token uyarı eşiği 30 dk'dan 10 dk'ya indirildi.
+
+17 Kasım  [HATA]  Bundle stokları 0'a çekiliyordu                   99c2a1a
+          Exact'ın dakikada 60 istek sınırı aşılınca gelen 429 hatası
+          "bundle değil" sayılıyordu; 1.352 bundle varyantına 0 stok
+          yazılmıştı. Bundle listesi artık tek istekle toplu çekiliyor;
+          hata olursa ürün atlanıyor ve StockSyncLogs'a yazılıyor.
+
+17 Kasım  [OPERASYON] Bundle stokları geri yüklendi
+          SK1031013SOPACKSET=56, SK1039016DSOPACKSET=34 ve A grubundaki
+          38 bundle (507 adet). Aynı akşam sunucuya publish edildi.
+
+19 Kasım  [HATA]  KDV muaf AB B2B siparişleri %21 ile gidiyordu     3cdd876
+          Örnek: Exact 157391 / Shopify #1986 (BE VAT numaralı müşteri).
+          Artık: Shopify'da tax_exempt + AB ülkesi → kod 5 (BTW Verlegd),
+          AB dışı → kod 6, %0. NL ve bol.com siparişleri değişmedi.
+          Hem webhook hem bekleyen işlem havuzu yolunda uygulandı.
+
+20 Kasım  [TEST]  KDV düzeltmesi testi + tüm sistem testi (bölüm 3 ve 6)
+
+20 Kasım  [DÜZELTME] Fulfillment servisi: silinmiş + iptal sipariş   (commit edilmedi)
+          Exact'ta sipariş bulunamazsa servis Shopify'a bakıyor. Sipariş
+          Shopify'da iptalse kayıt SkippedCancelled olarak kapanıyor.
+          İptal değilse (ör. token sorunu) eskisi gibi tekrar deniyor.
+          Örnek: #1983 (Exact 157377) 88 kez boşuna denenmişti.
+
+======================================================================
+2) KDV HATASI: "Önceden sorunsuz çalışıyordu, bozuldu mu?"
+======================================================================
+
+EVET, BOZULMUŞTU. Bozulma tarihi 2 MART 2026 (commit ef09d39,
+"0 kdv ile sipariş gonderimi ve 10 dakikada bir fiyat yenileme").
+
+  - 2 Mart'tan önce sipariş satırına KDV kodu yazılmıyordu. Exact kodu
+    cari kartından alıyordu; BE müşterisinde bu "5 - BTW Verlegd".
+    Sistem doğru çalışıyordu.
+  - 2 Mart'ta satırlara ürünün kendi KDV kodu (VATCode = SalesVatCode,
+    yani "2" = %21) açıkça eklendi. Satırdaki kod cari kartındaki
+    ayarı ezdiği için o tarihten sonraki tüm KDV muaf BE siparişleri
+    Exact'ta %21 ile açıldı.
+
+KDV muaf BE siparişlerinin EXACT'TAKİ GERÇEK DURUMU (20 Kasım, salt okuma):
+
+  Shopify  Exact    Müşteri                    KDV       Durum                  Sonuç
+  -------  -------  -------------------------  --------  ---------------------  ------------------
+  #1450    —        —                          —         ProcessedOrders'ta yok 2 Mart öncesi, kontrol dışı
+  #1482    151980   VZW EVARA - PVT S.J.B.       0,00 €  Complete + faturalı    ✅ Doğru (23.03'te Daniel Bogers elle düzeltmiş)
+  #1621    154079   BrandNewOffice             260,24 €  Complete + FATURALI    ❌ YANLIŞ: ürün satırları %21
+  #1661    154789   BrandNewOffice             381,86 €  Complete + FATURALI    ❌ YANLIŞ: ürün satırları %21
+  #1861    156555   Buro Market (Waterloo)     143,71 €  Complete + FATURALI    ❌ YANLIŞ: tüm satırlar %21
+  #1986    157391   BrandNewOffice               0,00 €  Open                   ✅ Doğru (18.11'de Resham Bipat elle düzeltmiş)
+  #1992    157436   BrandNewOffice               0,00 €  Open                   ✅ Doğru (18.11'de Resham Bipat elle düzeltmiş)
+
+  #1621 ve #1661'de yalnızca kargo satırı (09CH…) ve BEVESTIGD elle 5'e
+  çekilmiş; ürün satırları ve ORDERTOESLAG5 hâlâ kod 2 (%21).
+
+  → 3 siparişte müşteriye toplam 785,81 € fazla KDV faturalanmış
+    (BrandNewOffice 642,10 € + Buro Market 143,71 €).
+    Faturalar kesildiği için düzeltme Exact'ta credit nota + yeni fatura
+    ile yapılmalı. Bu muhasebe/müşteri kararı; sistem Exact'a geriye dönük
+    yazmaz.
+
+DİKKAT — AYRI BİR BULGU (karar gerekiyor):
+  Shopify'da tax_exempt işaretli 58 NL siparişi var (Aralık 2025'ten
+  bu yana, en çok Ocak 2026'da: 33 adet). Bu siparişlerde Shopify KDV
+  almıyor, ama düzeltme NL'ye bilerek dokunmuyor, yani Exact'a %21
+  gidiyor. NL içi B2B satış normalde KDV'lidir. Muhtemel sebep: bu NL
+  müşterilerinin Shopify'da yanlışlıkla "KDV muaf" işaretlenmiş olması.
+  Müşteriyle kontrol edilmeli: Shopify ile Exact faturası tutmuyor
+  olabilir.
+
+======================================================================
+3) TEST SONUÇLARI (20 Kasım)
+======================================================================
+
+Derleme: başarılı (0 hata).
+
+KDV kuralı testi: 18/18 geçti. Uygulamadan ayrı bir test projesiyle,
+canlı sisteme hiçbir şey yazmadan yapıldı.
+  ✅ Gerçek #1986 siparişi (Shopify'dan çekildi) → tax_exempt okunuyor,
+     kod 5, %0 çıkıyor
+  ✅ Exact'a gidecek satır JSON'u: "VATCode":"5", "VATPercentage":0
+  ✅ Normal (muaf olmayan) NL ve BE siparişleri → değişmiyor
+  ✅ tax_exempt alanı hiç yoksa → değişmiyor
+  ✅ Muaf NL → değişmiyor (bilinçli)
+  ✅ Muaf BE / DE (küçük harf dahil) → 5
+  ✅ Muaf GB / CH → 6
+  ✅ Fatura adresi yoksa teslimat adresi ülkesi kullanılıyor
+  ✅ Adres hiç yoksa → değişmiyor
+  ✅ bol.com siparişleri (source=bol veya BOLC… adı) → değişmiyor
+  ✅ Ayar ile özel kod verilebiliyor (ReverseChargeEuVatCode / ExportVatCode)
+  ✅ Shopify'daki tüm gerçek muaf siparişler: 7 BE → 5, 58 NL → ürün kodu
+
+UYGULAMA YERELDE NEDEN TAM ÇALIŞTIRILMADI:
+  Yerel appsettings canlı veritabanına, canlı Shopify'a ve canlı Exact'a
+  bağlı. Uygulama açılınca şu servisler kendiliğinden çalışır:
+    - Token yenileme: Exact refresh token'ı yenilenir, sunucudaki token
+      geçersiz kalır ve 13 Kasım'daki gibi bir kesinti olur.
+    - Bekleyen işlem havuzu: canlı havuzdaki siparişleri Exact'a gönderir.
+    - Stok ve fiyat senkronları: canlı mağazaya yazar.
+  Gerçek uçtan uca test (siparişin Exact'a gitmesi) için canlı ortamda
+  bir test siparişi gerekir; bkz. bölüm 5.
+
+======================================================================
+4) AÇIK İŞLER
+======================================================================
+
+[30 Eylül'den beri] Sunucu appsettings'e Notifications/SMTP bölümü
+                    eklenmeli (13 Kasım'da uyarı maili bu yüzden gitmedi).
+
+[10 Kasım'dan beri] Sunucu appsettings'e OrderFulfillmentSync bloğu:
+    "App": { "BackgroundServices": {
+        "OrderFulfillmentSync": {
+          "Enabled": true, "DryRun": true,
+          "IntervalMinutes": 60, "MaxAgeDays": 90 } } }
+    Sıra: DryRun=true ile publish et → 1-2 saat bekle →
+    GET /api/order-fulfillment-sync listesini kontrol et →
+    doğruysa DryRun=false yap ve uygulamayı yeniden başlat.
+    Not: yalnızca servisin ilk çalıştığı andan sonraki siparişler işlenir.
+
+[12 Kasım'dan beri] Sunucu appsettings'e MegaDealCompareAt bloğu:
+    "MegaDealCompareAt": { "Enabled": true, "DryRun": false, "IntervalMinutes": 15 }
+    Ayrıca: Mega Deal ürünlerinde %5 checkout ve bayi indirimi hâlâ
+    hariç tutulmuyor. Eşleşmeyen SKU'lar: VHT18011CMUL, VHT18012CMUL,
+    ZBHRTD80B7035, ZBHRTD80B9005; Bodi setleri SKU'suz.
+
+[17 Kasım'dan beri] B grubundaki 8 bundle (CLT120609010BE/HA/REW/RO,
+    CLT80809005RET, CLT80809006RO, CLT80809010REW/RO): stok geçmişine
+    bakılacak. PH18013V70355010 atlandı (committed=4).
+    CLT120609005BE ve CLT80809005REW Eylül'den beri 0, ayrıca bakılmalı.
+
+[18 Kasım gecesi]   Doğrulama: gece senkronundan sonra StockSyncLogs'ta
+    bundle yazımı olmamalı. Henüz kontrol edilmedi.
+
+[19 Kasım]          KDV düzeltmesi (3cdd876) sunucuya publish edilmedi.
+
+[20 Kasım — YENİ]   Faturalı 3 siparişte yanlış KDV: #1621 (154079) ve
+    #1661 (154789) BrandNewOffice, #1861 (156555) Buro Market.
+    Credit nota gerekli, toplam 785,81 €. #1482, #1986 ve #1992 zaten
+    elle düzeltilmiş.
+[20 Kasım — YENİ]   Exact'ta e-postası olmayan müşteri: 1301371 Staton Bouw.
+[20 Kasım — YENİ]   Mağazadan teslim alma siparişleri #1965 ve #1989:
+    Shopify'da "picked up" yapılmalı.
+
+[20 Kasım — YENİ]   58 KDV muaf NL siparişi: müşteriyle konuşulmalı
+    (bkz. bölüm 2).
+
+======================================================================
+5) GERÇEK UÇTAN UCA TEST İÇİN ÖNERİ
+======================================================================
+1. 3cdd876'yı sunucuya publish et.
+2. BE VAT numaralı test müşterisi (Shopify'da tax_exempt) ile küçük bir
+   test siparişi ver.
+3. Sunucu logunda "🧾 KDV kodu override: 5 (%0)" satırını gör.
+4. Exact'ta siparişin satırlarında KDV kodu 5 ve %0 olduğunu kontrol et.
+5. Test siparişini Exact'ta ve Shopify'da iptal et.
+Ayrıca normal bir NL siparişinde KDV'nin hâlâ %21 gittiği kontrol edilmeli.
+
+======================================================================
+6) TÜM SİSTEM TESTİ — 20 Kasım 2026, 06:20–06:35 UTC
+======================================================================
+Yöntem: Canlı Exact, canlı Shopify ve canlı veritabanı yalnızca OKUNDU.
+Hiçbir yere yazılmadı; sunucudaki Exact token'ı yenilenmedi.
+Her akışta aynı kayıt üç kaynakta karşılaştırıldı:
+Exact'taki değer = Shopify'daki değer = log tablosundaki değer.
+
+1. SİPARİŞ AKTARIMI (Shopify → Exact)                          ✅ ÇALIŞIYOR
+   Son 10 gün: 49 Shopify siparişinin 49'u Exact'a aktarılmış
+   (2'si iptal). Örneklemdeki 15 siparişin 15'i Exact'ta var ve
+   sipariş numaraları eşleşiyor. Bekleyen işlem havuzu: 17/17 Completed.
+
+2. STOK AKTARIMI (Exact → Shopify)                              ✅ ÇALIŞIYOR
+   Son gece turu 20.11 02:58: 3.517 başarılı, 1 hata (CHDU75201008,
+   geçici ağ hatası). Rastgele 40 ürün: 39'unda Exact = Shopify.
+   Tek fark VZB100B7035: aynı SKU'lu ikinci variant 34, Exact 37
+   (Merges/committed kaynaklı, entegrasyon doğru yazıyor).
+   Bundle düzeltmesi: 17.11 publish'ten sonra 46 bundle'ın hiçbirine
+   stok senkronu yazmadı ✅. Aktif üründe hâlâ 0 olan 8 bundle tam
+   olarak "B grubu" (CLT120609010BE/HA/REW/RO, CLT80809005RET,
+   CLT80809006RO, CLT80809010REW/RO) → yeni hata yok, bekleyen iş.
+
+3. FİYAT AKTARIMI (Exact → Shopify)                             ✅ ÇALIŞIYOR
+   Gece turu 20.11 03:02, saatlik tur 20.11 06:00 başarılı.
+   Rastgele 40 ürün: 40'ında Exact fiyatı = Shopify fiyatı.
+   345 ürün atlandı: Exact fiyatı 0/negatif, Shopify fiyatı korundu
+   (bilinçli). 1 ürün Shopify'da bulunamadı.
+
+4. MEGA DEAL / BLACK FRIDAY                                     ⚠️ SERVİS KAPALI
+   Sunucuda servis hiç çalışmamış: 323 kaydın hepsi "Scheduled",
+   hiç kontrol edilmemiş. Bu servis sunucu appsettings'te açılmadıkça
+   çalışmaz.
+   Şu an zararı yok: Shopify'daki 323 aktif variantın 323'ünde fiyat
+   = Regulier, çünkü Exact'ta BF fiyatları henüz düşürülmemiş.
+   Exact'ta fiyatlar düşürülmeden ÖNCE servis açılmalı, yoksa
+   üstü çizili fiyat görünmez. 4 SKU Shopify'da aktif değil.
+
+5. MÜŞTERİ AKTARIMI (Exact → Shopify)                           ✅ ÇALIŞIYOR
+   Her gün 04:30'da çalışıyor. Son 15 kaydın 14'ü Shopify'da var.
+   1301371 Staton Bouw: Exact'ta e-postası yok, bu yüzden Shopify'da
+   oluşturulamıyor. Veri eksikliği, kod hatası değil; Exact'a e-posta
+   girilmeli.
+
+6. YENİ ÜRÜN EKLEME / ÜRÜN GÜNCELLEME                           ✅ ÇALIŞIYOR
+   Son 30 günde Exact'ta oluşturulan 1 webshop ürünü (CHGENESISZWARM)
+   Shopify'da aktif ve fiyatı doğru (59,00). Ürün servisi her gün
+   23:30'da çalışıyor; son tur 18.11.
+
+7. EXACT COMPLETE → SHOPIFY FULFILLED                           ✅ ÇALIŞIYOR
+   Sunucuda 12.11 08:43'ten beri çalışıyor; son kontrol 20.11 05:56.
+   DÜZELTME (20.11): "gerçek modda" bilgisi yanlıştı. #1969 ve #1984'ü
+   Resham Bipat elle kapatmış; servis şimdiye kadar hiçbir siparişi
+   kendisi kapatmadı. Sunucudaki DryRun değeri bilinmiyor. Bekleyen 34 siparişin Exact durumu 12/20, yani henüz
+   tamamlanmamış. Complete olup kapatılmamış sipariş yok.
+   Elle bakılacak: #1965 ve #1989 (mağazadan teslim alma, Shopify'da
+   "picked up" yapılmalı), 157362 ve 157422 (Exact'ta iptal).
+   Küçük kusur: #1983 Shopify'da iptal edilmiş, Exact'tan da silinmiş
+   (157377), ama servis 88 kez denedi. 20.11'de DÜZELTİLDİ, test sonuçları
+   bölüm 7'de. Sunucuya publish edilince #1983 ilk turda kapanacak.
+
+8. TOKEN + BEKLEYEN İŞLEM HAVUZU                                ✅ ÇALIŞIYOR
+   Sunucu token'ı zamanında yeniledi (06:30:01 UTC'de, bitişe 51 sn kala).
+   Kesinti kaydı yok, havuzda bekleyen sipariş yok.
+
+9. KDV KURALI (yeni kod, 3cdd876)                               ✅ 18/18 TEST
+   Henüz sunucuda değil. Bkz. bölüm 3.
+
+GENEL SONUÇ: Stok, fiyat, müşteri, sipariş, yeni ürün ve fulfillment
+akışlarında kod kaynaklı hata bulunmadı. Bulunan iki gerçek sorun:
+  (a) 3 faturalı BE siparişinde 785,81 € yanlış KDV (bölüm 2).
+  (b) Mega Deal servisi sunucuda kapalı.
+
+======================================================================
+7) FULFILLMENT DÜZELTMESİ + TESTLERİN TEKRARI — 20 Kasım 2026, 06:35 UTC
+======================================================================
+Değişiklik: services/OrderFulfillmentSync/OrderFulfillmentSyncService.cs
+  (ProcessOrderAsync). Etki analizi: risk LOW (yalnızca RunOnceAsync →
+  ExecuteAsync). detect-changes: 1 dosya, 4 akış; risk medium, hepsi
+  servisin kendi içinde. Derleme: 0 hata.
+
+Düzeltme testi: 7/7 geçti. Gerçek servis kodu canlı Exact/Shopify verisiyle
+çalıştırıldı. DB yazımları transaction içinde yapılıp geri alındı, token
+yenileme kapatıldı, DryRun açıktı.
+  ✅ A) #1983 (Shopify'da iptal + Exact'tan silinmiş) → SkippedCancelled,
+        neden "Shopify'da iptal edilmiş, Exact'ta sipariş bulunamadı"
+  ✅ A) Rollback sonrası canlı DB değişmedi (#1983 hâlâ Pending)
+  ✅ B) İptal OLMAYAN sipariş + Exact'ta bulunamayan sipariş → eskisi gibi
+        hata, servis denemeye devam ediyor. Token kesintisinde siparişler
+        yanlışlıkla kapanmaz.
+  ✅ C) 3 normal bekleyen sipariş (157505/06/07) → Pending, davranış aynı
+
+Tüm testlerin tekrarı: sonuçlar bölüm 6 ile birebir aynı.
+  KDV kuralı 18/18 ✅ | Sipariş 49/49, Exact'ta 15/15 ✅
+  Stok 39/40 ✅ (VZB100B7035 Merges farkı) | Bundle yazımı 0 ✅ (8 B grubu 0)
+  Fiyat 40/40 ✅ | Müşteri 14/15 ✅ (Staton Bouw e-postasız)
+  Yeni ürün 1/1 ✅ | Fulfillment: Complete olup bekleyen yok ✅
+  Token yenileniyor ✅ | Havuz boş ✅ | Mega Deal servisi KAPALI ⚠️
+  Exact KDV: #1621, #1661, #1861 hâlâ yanlış (785,81 €) ❌
+
+Sunucu tarafında #1983 düzeltme publish edilene kadar Pending kalır.
+
+======================================================================
+8) UYGULAMANIN ÇALIŞTIRILMASI — 20 Kasım 2026, 06:54–07:10 UTC
+======================================================================
+Uygulama gerçek kodla, Microsoft test sunucusu (WebApplicationFactory)
+içinde açıldı. Arka plan servisleri kapatıldı, token yenileme devre
+dışıydı. Proje kodunda bu test için değişiklik yapılmadı.
+
+A) Uç testi: 31/33.
+   Uygulama açıldı (123 uç). DB bağlantısı, tablo kontrolleri, token ve
+   GraphQL servisi açılışta sorunsuz.
+   ✅ Sipariş izleme, sipariş detayı (DB+Shopify), Exact sipariş detayı
+   ✅ Havuz listesi/özeti/kaydı, token durumu
+   ✅ Stok özeti/logları/manuel durum, StockSync logları
+   ✅ Fiyat özeti/sonuçları/logları/durumu
+   ✅ Exact webshop ürün sayısı (3.339) ve ürün listesi
+   ✅ Müşteri durumu, Exact müşteri e-posta ile arama
+   ✅ Fulfillment listesi, Mega Deal listesi
+   ✅ Mega Deal run DRY RUN: 323 satır, 0 hata, 0 compare-at yazılacak,
+      2 compare-at temizlenecek: DH18022V7035 (2 variant). Bu variantlarda
+      compare-at = fiyat = 187, yani Shopify'da üstü çizili fiyat zaten
+      görünmüyor; temizlenmesi zararsız. ADE1PLZ9005B'deki elle girilmiş
+      349 compare-at'e dokunulmuyor.
+   ✅ Dashboard genel bakış, Exact webhook abonelikleri
+   ✅ Yetkili uç token'sız → 401, bozuk token → 401
+
+   ❌ GÜVENLİK: /api/settings/shopify/config oturum açmadan Shopify
+      access token'ını döndürüyor.
+   ❌ GÜVENLİK: /api/settings/exact/token oturum açmadan Exact token
+      bilgisini döndürüyor.
+   Diğer güvenlik bulguları (koddan):
+   - /api/webhooks/order-created Shopify HMAC imzasını doğrulamıyor.
+     Adresi bilen herkes sahte sipariş gönderip Exact'ta satış siparişi
+     oluşturabilir.
+   - SettingsController (POST/DELETE), PendingOperations retry/cancel/
+     process-now ve Dashboard trigger uçları oturum açmadan çalışıyor.
+   - Swagger production'da açık; tüm uçlar listeleniyor.
+   - GET /api/StockSync/by-code bir GET isteği olmasına rağmen Shopify'a
+     stok yazıyor.
+   Bunlar test sunucusunda doğrulandı; canlı sunucuda denenmedi.
+
+B) Fulfillment servisi çalıştırıldı (yalnızca bu servis açık)
+   DryRun=true turu : fulfilled 0, atlanan 1 (#1983 → SkippedCancelled,
+                      düzeltme canlı DB'de çalıştı), bekleyen 34, hata 0.
+   Yerel appsettings DryRun → false yapıldı.
+   Gerçek tur       : fulfilled 0, atlanan 0, bekleyen 34, hata 0.
+                      Exact'ta tamamlanmış sipariş olmadığı için Shopify'a
+                      bir şey yazılmadı.
+   Sunucu token'ı test sırasında normal şekilde yenilendi (07:15 bitiş).
+
+   SERVİSİN SUNUCUDA KALICI ÇALIŞMASI İÇİN:
+   1. Fulfillment düzeltmesi commit edilip sunucuya publish edilmeli.
+   2. Sunucu appsettings.json'da:
+        "OrderFulfillmentSync": { "Enabled": true, "DryRun": false,
+                                  "IntervalMinutes": 60, "MaxAgeDays": 90 }
+   3. Yerel uygulama sürekli çalıştırılmamalı; sunucuyla aynı tabloyu
+      işler ve aynı siparişler iki kez işlenebilir.
