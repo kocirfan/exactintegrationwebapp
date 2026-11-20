@@ -187,7 +187,20 @@ ORDER BY CASE WHEN LastCheckedAt IS NULL THEN 0 ELSE 1 END, LastCheckedAt, Creat
             // Exact durumu (sadece okuma)
             var detail = await exact.GetOrderDetailByOrderId(row.ExactOrderGuid);
             if (detail == null)
+            {
+                // Exact'ta sipariş yoksa (silinmiş) ve Shopify'da iptal edilmişse izlemeyi bırak;
+                // aksi halde (token/erişim sorunu olabilir) hata fırlatılır ve sonraki turda tekrar denenir.
+                var shopifyOrder = await GetShopifyOrderAsync(row.ShopifyOrderId, ct);
+                if (shopifyOrder != null &&
+                    shopifyOrder.Value.GetProperty("cancelledAt").ValueKind != JsonValueKind.Null)
+                {
+                    await UpdateRowAsync(db, row.ShopifyOrderId, OrderFulfillmentSyncStatus.SkippedCancelled, row.ExactStatus,
+                        "Shopify'da iptal edilmiş, Exact'ta sipariş bulunamadı", null, DateTime.UtcNow,
+                        shopifyOrder.Value.GetProperty("name").GetString() ?? row.ShopifyOrderName, ct);
+                    return OrderFulfillmentSyncStatus.SkippedCancelled;
+                }
                 throw new Exception("Exact sipariş detayı alınamadı (token/erişim veya sipariş yok)");
+            }
 
             var exactStatus = detail.Status;
             if (exactStatus == EXACT_STATUS_CANCELLED)
